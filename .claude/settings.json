@@ -1,0 +1,24 @@
+{
+  // "model": "claude-opus-4-8",
+  // "thinkingEffort": "high",
+  "permissions": {
+    // Blanket allow: run anything without prompting...
+    "allow": [
+      "Bash",
+      "Read",
+      "Edit",
+      "Write"
+    ],
+    // ...except file/folder deletion. Deny always wins over allow.
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(rmdir:*)",
+      "Bash(unlink:*)",
+      "Bash(shred:*)",
+      "Bash(trash:*)",
+      "Bash(git clean:*)",
+      "Bash(find:* -delete*)",
+      "Bash(find:* -exec rm*)"
+    ]
+  }
+}
