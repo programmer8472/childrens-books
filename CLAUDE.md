@@ -113,18 +113,30 @@ Worker tasks are idempotent, keyed on `(book_id, round, method)`. Re-running a t
 
 The project is built in units. **Do not start a unit until the previous unit's verification passes and is committed.** The fakes in Units 2–5 are the key — they let the entire pipeline logic be proven before any API spend.
 
-| Unit | Goal |
-|------|------|
-| 0 | Repo + docker-compose: FastAPI, Celery, Redis, Postgres, `/health`, trivial worker task, LocalStorage |
-| 1 | All DB tables + migrations + status enum + transition table + repository layer |
-| 2 | `LLMProvider` + `ImageProvider` interfaces with `Fake*` implementations |
-| 3 | `WriterAgent` + `JudgeAgent` with structured I/O and retry on bad JSON |
-| 4 | Orchestrator + full writer/judge loop, end-to-end on fakes |
-| 5 | FastAPI endpoints + WebSocket progress |
-| 6 | Real LLM provider (verify model/endpoint/pricing first) |
-| 7 | Real image provider + `character_assets` (verify Leonardo terms first) |
-| 8 | Cover, metadata, export (KDP PDF + Word + Markdown + image folder) |
-| 9 | Next.js frontend: Kanban board, approval gate, inline paragraph editor |
+| Unit | Status | Goal |
+|------|--------|------|
+| 0 | DONE | Repo + docker-compose: FastAPI, Celery, Redis, Postgres, `/health`, trivial worker task, LocalStorage |
+| 1 | DONE | All DB tables + migrations + status enum + transition table + repository layer |
+| 2 | DONE | `LLMProvider` + `ImageProvider` interfaces with `Fake*` implementations |
+| 3 | DONE | `WriterAgent` + `JudgeAgent` with structured I/O and retry on bad JSON |
+| 4 | DONE | Orchestrator + full writer/judge loop, end-to-end on fakes |
+| 5 | **NEXT** | FastAPI endpoints + WebSocket progress |
+| 6 | | Real LLM provider (verify model/endpoint/pricing first) |
+| 7 | | Real image provider + `character_assets` (verify Leonardo terms first) |
+| 8 | | Cover, metadata, export (KDP PDF + Word + Markdown + image folder) |
+| 9 | | Next.js frontend: Kanban board, approval gate, inline paragraph editor |
+
+### What was built in each completed unit
+
+**Unit 0** — `docker-compose.yml` (Postgres 16 on 5433, Redis 7, API on 8001, Celery worker), `app/main.py` (`GET /health`, `POST /health/worker`), `app/tasks.py` (`ping` task).
+
+**Unit 1** — `app/db/enums.py` (`BookStatus` + `LEGAL_TRANSITIONS` + `assert_legal_transition`), `app/db/models.py` (all 6 tables), `app/db/repos/` (one class per table), `migrations/versions/0002_schema.py`.
+
+**Unit 2** — `app/providers/base.py` (`LLMProvider`, `ImageProvider` ABCs; `LLMResponse`, `CharacterRef`, `ImageResult` dataclasses), `app/providers/fake_llm.py` (`FakeLLMProvider` — injectable response queue, records calls), `app/providers/fake_image.py` (`FakeImageProvider`), `app/providers/factory.py` (`get_llm_provider` / `get_image_provider` driven by `Settings.llm_provider` / `Settings.image_provider`, both default to `"fake"`).
+
+**Unit 3** — `app/agents/writer.py` (`WriterAgent.write(brief, method, prior_critique)` — 4 named methods, revision vs. fresh system prompts), `app/agents/judge.py` (`JudgeAgent.judge(story_versions, criteria)` — one LLM call per version, 3-retry loop with error fed back to LLM, `PROMPT_VERSION = "v1"`), `app/agents/base.py` (`JudgementResult`, `validate_judgement_json` — computes `passed` from threshold, not LLM opinion).
+
+**Unit 4** — `app/orchestrator.py` (`Orchestrator` — sole owner of `BookRepo.transition()`; `start`, `run_judging`, `handle_revision` as the three pipeline phase methods; idempotent `_run_writing_round`; `_build_prior_critique` from best judgement of prior round), pipeline Celery tasks in `app/tasks.py` (`pipeline_start` → `pipeline_run_judging` → `pipeline_handle_revision` chain), `app/db/session.py` gains `get_task_session()` context manager.
 
 ---
 

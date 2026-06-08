@@ -1,5 +1,6 @@
 """SQLAlchemy engine/session wiring. No models yet (those arrive in Unit 1)."""
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -21,5 +22,19 @@ def get_session() -> Iterator[Session]:
     session = SessionLocal()
     try:
         yield session
+    finally:
+        session.close()
+
+
+@contextmanager
+def get_task_session() -> Generator[Session, None, None]:
+    """Context manager for Celery tasks: commits on success, rolls back on error."""
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
