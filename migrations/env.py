@@ -7,8 +7,8 @@ from sqlalchemy import engine_from_config, pool
 from app.config import get_settings
 from app.db.session import Base
 
-# Unit 1 imports the models here so autogenerate sees them.
-# import app.db.models  # noqa: F401
+# Models must be imported here so their metadata is visible to autogenerate.
+import app.db.models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", get_settings().database_url)

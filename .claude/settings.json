@@ -1,15 +1,12 @@
 {
-  // "model": "claude-opus-4-8",
-  // "thinkingEffort": "high",
   "permissions": {
-    // Blanket allow: run anything without prompting...
+    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash",
       "Read",
       "Edit",
       "Write"
     ],
-    // ...except file/folder deletion. Deny always wins over allow.
     "deny": [
       "Bash(rm:*)",
       "Bash(rmdir:*)",
