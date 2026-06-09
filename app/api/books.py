@@ -196,6 +196,37 @@ def retry_book(book_id: uuid.UUID, db: Session = Depends(get_session)):
 # ---------------------------------------------------------------------------
 
 
+class RewriteIn(BaseModel):
+    paragraph_text: str
+    instruction: str
+
+
+@router.post("/books/{book_id}/paragraphs/rewrite")
+def rewrite_paragraph(book_id: uuid.UUID, body: RewriteIn, db: Session = Depends(get_session)):
+    """Inline editor: rewrite a paragraph with a natural-language instruction."""
+    try:
+        BookRepo(db).get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    from app.providers.factory import get_llm_provider
+
+    provider = get_llm_provider()
+    system = (
+        "You are a children's book editor. Rewrite the given paragraph following the "
+        "user's instruction. Keep the same reading level, character names, and story "
+        "context. Return only the rewritten paragraph, nothing else."
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": f"Paragraph:\n{body.paragraph_text}\n\nInstruction: {body.instruction}",
+        }
+    ]
+    response = provider.generate(system, messages)
+    return {"original": body.paragraph_text, "rewritten": response.content.strip()}
+
+
 class MetadataIn(BaseModel):
     title: str | None = None
     subtitle: str | None = None

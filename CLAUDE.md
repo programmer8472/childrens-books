@@ -73,7 +73,7 @@ Do not start a unit until the previous unit's verification passes and is committ
 | 6 | DONE | Real LLM provider (DeepSeek via OpenAI-compatible SDK) |
 | 7 | IN PROGRESS | `PlaceholderImageProvider` done (correct spread dims, prompt text overlay). `LeonardoImageProvider` + `character_assets` pending API key — swap `IMAGE_PROVIDER=leonardo`, no other code changes needed |
 | 8 | DONE | Compositor (`app/compositor/` — 8 modules), `MetadataAgent`, `BookComposer.compose_all` (interior PDF, cover PDF, Word, Markdown, text, images); full post-approval pipeline wired; `GET/PUT /metadata`, `GET /export/{artifact}` API; 225 tests passing |
-| 9 | **NEXT** | Next.js frontend: Kanban board, approval gate, inline paragraph editor |
+| 9 | DONE | Next.js 15 frontend (`frontend/`): dark Kanban board with priority queue, book detail with judge score breakdown, inline paragraph editor (`POST /paragraphs/rewrite`), WebSocket live feed, metadata editor, export downloads; CORS on API; 229 tests passing |
 
 ---
 

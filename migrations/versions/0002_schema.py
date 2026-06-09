@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "0002_schema"
@@ -16,23 +17,31 @@ down_revision: str | None = "0001_baseline"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_bookstatus = sa.Enum(
+_BOOKSTATUS_VALUES = (
     "DRAFT_BRIEF", "OUTLINING", "WRITING", "JUDGING", "REVISION",
     "AWAITING_APPROVAL", "APPROVED", "GENERATING_IMAGES", "GENERATING_COVER",
     "DRAFTING_METADATA", "EXPORTING", "EXPORT_READY", "DONE", "RETIRED",
-    name="bookstatus",
 )
+
+_bookstatus = PgEnum(*_BOOKSTATUS_VALUES, name="bookstatus", create_type=False)
 
 
 def upgrade() -> None:
-    _bookstatus.create(op.get_bind(), checkfirst=True)
+    values = ", ".join(f"'{v}'" for v in _BOOKSTATUS_VALUES)
+    op.execute(f"""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'bookstatus') THEN
+                CREATE TYPE bookstatus AS ENUM ({values});
+            END IF;
+        END $$;
+    """)
 
     op.create_table(
         "books",
         sa.Column("id", sa.UUID(as_uuid=True), primary_key=True),
         sa.Column("title", sa.Text, nullable=True),
         sa.Column("brief", JSONB, nullable=False),
-        sa.Column("status", sa.Enum(name="bookstatus", create_type=False), nullable=False),
+        sa.Column("status", _bookstatus, nullable=False),
         sa.Column("max_rounds", sa.Integer, nullable=False, server_default="5"),
         sa.Column("current_round", sa.Integer, nullable=False, server_default="0"),
         sa.Column("score_threshold", sa.Float, nullable=False, server_default="7.5"),
@@ -102,8 +111,8 @@ def upgrade() -> None:
         "audit_log",
         sa.Column("id", sa.UUID(as_uuid=True), primary_key=True),
         sa.Column("book_id", sa.UUID(as_uuid=True), sa.ForeignKey("books.id"), nullable=False),
-        sa.Column("from_status", sa.Enum(name="bookstatus", create_type=False), nullable=True),
-        sa.Column("to_status", sa.Enum(name="bookstatus", create_type=False), nullable=False),
+        sa.Column("from_status", _bookstatus, nullable=True),
+        sa.Column("to_status", _bookstatus, nullable=False),
         sa.Column("actor", sa.Text, nullable=False),
         sa.Column("note", sa.Text, nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
