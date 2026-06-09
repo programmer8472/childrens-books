@@ -27,7 +27,7 @@ LEGAL_TRANSITIONS: dict[BookStatus, frozenset[BookStatus]] = {
     BookStatus.WRITING: frozenset({BookStatus.JUDGING}),
     BookStatus.JUDGING: frozenset({BookStatus.REVISION, BookStatus.AWAITING_APPROVAL, BookStatus.RETIRED}),
     BookStatus.REVISION: frozenset({BookStatus.WRITING}),
-    BookStatus.AWAITING_APPROVAL: frozenset({BookStatus.APPROVED, BookStatus.RETIRED}),
+    BookStatus.AWAITING_APPROVAL: frozenset({BookStatus.APPROVED, BookStatus.REVISION, BookStatus.RETIRED}),
     BookStatus.APPROVED: frozenset({BookStatus.GENERATING_IMAGES}),
     BookStatus.GENERATING_IMAGES: frozenset({BookStatus.GENERATING_COVER}),
     BookStatus.GENERATING_COVER: frozenset({BookStatus.DRAFTING_METADATA}),

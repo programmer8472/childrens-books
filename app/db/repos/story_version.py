@@ -37,6 +37,14 @@ class StoryVersionRepo:
             raise ValueError(f"StoryVersion {version_id} not found")
         return version
 
+    def list_for_book(self, book_id: uuid.UUID) -> list[StoryVersion]:
+        stmt = (
+            select(StoryVersion)
+            .where(StoryVersion.book_id == book_id)
+            .order_by(StoryVersion.created_at)
+        )
+        return list(self._s.scalars(stmt))
+
     def list_for_round(self, book_id: uuid.UUID, round: int) -> list[StoryVersion]:
         stmt = (
             select(StoryVersion)

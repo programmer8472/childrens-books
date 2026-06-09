@@ -42,7 +42,7 @@ These four responsibilities must not leak into each other. Violating this makes 
 
 ## Pipeline state machine
 
-Every book has a `status`. The orchestrator is the **only** thing that transitions it, and every transition writes an `audit_log` row.
+Every book has a `status`. `BookRepo.transition()` is the **only** way to change it, and every call writes an `audit_log` row. Automated steps use `actor="orchestrator"`; human gate actions (approve/reject) use `actor="human"` via the API.
 
 ```
 DRAFT_BRIEF → OUTLINING → WRITING → JUDGING → REVISION (loops, capped)
@@ -69,10 +69,10 @@ Do not start a unit until the previous unit's verification passes and is committ
 | 2 | DONE | `LLMProvider` + `ImageProvider` interfaces with `Fake*` implementations |
 | 3 | DONE | `WriterAgent` + `JudgeAgent` with structured I/O and retry on bad JSON |
 | 4 | DONE | Orchestrator + full writer/judge loop, end-to-end on fakes |
-| 5 | **NEXT** | FastAPI endpoints + WebSocket progress |
-| 6 | | Real LLM provider (verify model/endpoint/pricing first) |
-| 7 | | Real image provider + `character_assets` (verify Leonardo terms first) |
-| 8 | | Compositor: PDF/X-1a interior + cover per [book design spec](docs/book-design-spec.md); Word + Markdown + image folder exports |
+| 5 | DONE | FastAPI endpoints + WebSocket progress |
+| 6 | DONE | Real LLM provider (DeepSeek via OpenAI-compatible SDK) |
+| 7 | IN PROGRESS | `PlaceholderImageProvider` done (correct spread dims, prompt text overlay). `LeonardoImageProvider` + `character_assets` pending API key — swap `IMAGE_PROVIDER=leonardo`, no other code changes needed |
+| 8 | **NEXT** | Compositor: PDF/X-1a interior + cover per [book design spec](docs/book-design-spec.md); Word + Markdown + image folder exports |
 | 9 | | Next.js frontend: Kanban board, approval gate, inline paragraph editor |
 
 ---

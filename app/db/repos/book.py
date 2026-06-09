@@ -2,6 +2,7 @@
 import uuid
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.enums import BookStatus, assert_legal_transition
@@ -51,6 +52,10 @@ class BookRepo:
         self._s.add(audit)
         self._s.flush()
         return book
+
+    def list_all(self) -> list[Book]:
+        stmt = select(Book).order_by(Book.created_at.desc())
+        return list(self._s.scalars(stmt))
 
     def increment_round(self, book: Book) -> Book:
         book.current_round += 1
