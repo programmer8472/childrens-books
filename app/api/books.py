@@ -16,7 +16,13 @@ from app.db.models import StoryVersion
 from app.db.repos import BookRepo, StoryVersionRepo
 from app.db.session import get_session
 from app.events import channel_for, publish_event
-from app.tasks import pipeline_handle_revision, pipeline_run_judging, pipeline_start
+from app.storage.local import LocalStorage
+from app.tasks import (
+    pipeline_generate_images,
+    pipeline_handle_revision,
+    pipeline_run_judging,
+    pipeline_start,
+)
 
 router = APIRouter()
 
@@ -140,6 +146,7 @@ def approve_book(book_id: uuid.UUID, db: Session = Depends(get_session)):
     repo.transition(book, BookStatus.APPROVED, actor="human")
     db.commit()
     publish_event(book_id, {"type": "status_change", "status": "APPROVED", "actor": "human"})
+    pipeline_generate_images.delay(str(book_id))
     return {"ok": True, "status": "APPROVED"}
 
 
@@ -181,6 +188,96 @@ def retry_book(book_id: uuid.UUID, db: Session = Depends(get_session)):
     raise HTTPException(
         status_code=400,
         detail=f"Cannot retry from {book.status.value}; retryable states: JUDGING, REVISION",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Metadata: GET + PUT (human-editable before export)
+# ---------------------------------------------------------------------------
+
+
+class MetadataIn(BaseModel):
+    title: str | None = None
+    subtitle: str | None = None
+    author: str | None = None
+    description: str | None = None
+    keywords: list[str] | None = None
+    age_range: str | None = None
+    series_name: str | None = None
+
+
+@router.get("/books/{book_id}/metadata")
+def get_metadata(book_id: uuid.UUID, db: Session = Depends(get_session)):
+    try:
+        book = BookRepo(db).get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+    return book.book_metadata or {}
+
+
+@router.put("/books/{book_id}/metadata")
+def update_metadata(book_id: uuid.UUID, body: MetadataIn, db: Session = Depends(get_session)):
+    repo = BookRepo(db)
+    try:
+        book = repo.get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+    current = dict(book.book_metadata or {})
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    current.update(updates)
+    repo.save_metadata(book, current)
+    db.commit()
+    return current
+
+
+# ---------------------------------------------------------------------------
+# Export: GET manifest and download individual files
+# ---------------------------------------------------------------------------
+
+
+@router.get("/books/{book_id}/export")
+def get_export_manifest(book_id: uuid.UUID, db: Session = Depends(get_session)):
+    try:
+        book = BookRepo(db).get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if book.status.value not in ("EXPORT_READY", "DONE"):
+        raise HTTPException(status_code=400, detail=f"Book is {book.status.value}; not yet EXPORT_READY")
+    return book.export_manifest or {}
+
+
+@router.get("/books/{book_id}/export/{artifact}")
+def download_export(book_id: uuid.UUID, artifact: str, db: Session = Depends(get_session)):
+    """Download a single export artifact by name (interior_pdf, cover_pdf, word, markdown, text)."""
+    from fastapi.responses import Response
+
+    try:
+        book = BookRepo(db).get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+    manifest = book.export_manifest or {}
+    if artifact not in manifest:
+        raise HTTPException(status_code=404, detail=f"Artifact '{artifact}' not in export manifest")
+    storage_key = manifest[artifact]
+    storage = LocalStorage(get_settings().storage_local_root)
+    try:
+        data = storage.get(storage_key)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Artifact file not found in storage")
+
+    _content_types = {
+        "interior_pdf": "application/pdf",
+        "cover_pdf": "application/pdf",
+        "word": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "markdown": "text/markdown",
+        "text": "text/plain",
+    }
+    content_type = _content_types.get(artifact, "application/octet-stream")
+    filename = storage_key.rsplit("/", 1)[-1]
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

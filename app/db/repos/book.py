@@ -62,3 +62,15 @@ class BookRepo:
         book.updated_at = datetime.now()
         self._s.flush()
         return book
+
+    def save_metadata(self, book: Book, metadata: dict) -> Book:
+        book.book_metadata = metadata
+        book.updated_at = datetime.now()
+        self._s.flush()
+        return book
+
+    def save_export_manifest(self, book: Book, manifest: dict) -> Book:
+        book.export_manifest = manifest
+        book.updated_at = datetime.now()
+        self._s.flush()
+        return book

@@ -246,6 +246,7 @@ class TestApproveBook:
         book = _fake_book(BookStatus.AWAITING_APPROVAL)
         with (
             patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_generate_images"),
             patch("app.api.books.publish_event"),
         ):
             MockRepo.return_value.get.return_value = book
@@ -257,6 +258,7 @@ class TestApproveBook:
         book = _fake_book(BookStatus.AWAITING_APPROVAL)
         with (
             patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_generate_images"),
             patch("app.api.books.publish_event"),
         ):
             MockRepo.return_value.get.return_value = book
@@ -282,6 +284,7 @@ class TestApproveBook:
         book = _fake_book(BookStatus.AWAITING_APPROVAL)
         with (
             patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_generate_images"),
             patch("app.api.books.publish_event") as mock_pub,
         ):
             MockRepo.return_value.get.return_value = book

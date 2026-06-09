@@ -7,17 +7,24 @@
       "Edit",
       "Write",
       "WebFetch",
-      "WebSearch"
+      "WebSearch",
+      "Agent",
+      "TodoWrite",
+      "Bash(git clean:*)",
+      "Bash(git fetch:*)"
     ],
     "deny": [
       "Bash(rm:*)",
+      "Bash(rm -rf:*)",
       "Bash(rmdir:*)",
       "Bash(unlink:*)",
       "Bash(shred:*)",
       "Bash(trash:*)",
-      "Bash(git clean:*)",
+      "Bash(git push:*)",
+      "Bash(git reset:*)",
       "Bash(find:* -delete*)",
-      "Bash(find:* -exec rm*)"
+      "Bash(find:* -exec rm*)",
+      "Bash(truncate:*)"
     ]
   }
 }

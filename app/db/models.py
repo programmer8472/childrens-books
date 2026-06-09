@@ -22,6 +22,8 @@ class Book(Base):
     max_rounds: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=5)
     current_round: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     score_threshold: Mapped[float] = mapped_column(sa.Float, nullable=False, default=7.5)
+    book_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    export_manifest: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False)
 

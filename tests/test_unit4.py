@@ -130,14 +130,48 @@ def _judge_json(weighted_total: float, threshold: float = 7.5) -> str:
     })
 
 
+class _FakeImageRepo:
+    def __init__(self) -> None:
+        self._store: list = []
+
+    def create(self, book_id, kind, prompt, provider, provider_params, storage_key, *,
+               story_version_id=None, scene_index=None, seed=None):
+        obj = SimpleNamespace(
+            id=uuid.uuid4(), book_id=book_id, kind=kind, prompt=prompt,
+            provider=provider, provider_params=provider_params, storage_key=storage_key,
+            story_version_id=story_version_id, scene_index=scene_index, seed=seed,
+        )
+        self._store.append(obj)
+        return obj
+
+    def list_for_book(self, book_id, *, kind=None):
+        return [i for i in self._store if i.book_id == book_id and (kind is None or i.kind == kind)]
+
+
+class _FakeStorage:
+    def __init__(self) -> None:
+        self._data: dict[str, bytes] = {}
+
+    def put(self, key: str, data: bytes) -> None:
+        self._data[key] = data
+
+    def get(self, key: str) -> bytes:
+        return self._data[key]
+
+    def exists(self, key: str) -> bool:
+        return key in self._data
+
+
 def _make_env(brief=None, *, max_rounds=3, score_threshold=7.5, llm_responses=None):
     book = _FakeBook(brief or BRIEF, max_rounds=max_rounds, score_threshold=score_threshold)
     book_repo = _FakeBookRepo(book)
     version_repo = _FakeStoryVersionRepo()
     judgement_repo = _FakeJudgementRepo()
+    image_repo = _FakeImageRepo()
     llm = FakeLLMProvider(responses=llm_responses or [])
     image = FakeImageProvider()
-    orch = Orchestrator(book_repo, version_repo, judgement_repo, llm, image)
+    storage = _FakeStorage()
+    orch = Orchestrator(book_repo, version_repo, judgement_repo, image_repo, llm, image, storage)
     return orch, book, book_repo, version_repo, judgement_repo, llm
 
 
