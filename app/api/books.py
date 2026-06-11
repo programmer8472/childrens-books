@@ -282,6 +282,34 @@ def cancel_book(book_id: uuid.UUID, db: Session = Depends(get_session)):
     return {"ok": True, "status": book.status.value, "cancelling": True}
 
 
+@router.delete("/books/{book_id}", status_code=204)
+def delete_book(book_id: uuid.UUID, db: Session = Depends(get_session)):
+    """Hard-delete a book and all of its rows + storage artifacts.
+
+    A cleanup tool for retired/cancelled or otherwise unwanted books. This is
+    irreversible and is allowed from any state (single-user v1); a book actively
+    running in a worker will surface a not-found error on its next stage.
+    """
+    from fastapi.responses import Response
+
+    repo = BookRepo(db)
+    try:
+        book = repo.get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    storage_keys = repo.delete(book)
+    db.commit()
+
+    storage = LocalStorage(get_settings().storage_local_root)
+    for key in storage_keys:
+        with contextlib.suppress(Exception):
+            storage.delete(key)
+
+    publish_event(book_id, {"type": "deleted", "actor": "human"})
+    return Response(status_code=204)
+
+
 # ---------------------------------------------------------------------------
 # Metadata: GET + PUT (human-editable before export)
 # ---------------------------------------------------------------------------

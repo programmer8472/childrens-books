@@ -33,6 +33,17 @@ export const api = {
   getBook: (id: string) => req<Book>(`/books/${id}`),
   createBook: (body: CreateBookPayload) =>
     req<Book>("/books", { method: "POST", body: JSON.stringify(body) }),
+  deleteBook: async (id: string) => {
+    const res = await fetch(`${BASE}/books/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = await res.json();
+        detail = body?.detail ?? detail;
+      } catch {}
+      throw new Error(`${res.status}: ${detail}`);
+    }
+  },
 
   // Pipeline actions
   approveBook: (id: string, story_version_id?: string) =>

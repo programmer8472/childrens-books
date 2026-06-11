@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { api } from "@/lib/api";
 import { usePolling } from "@/lib/hooks";
@@ -35,12 +35,20 @@ function group(b: Book): GroupKey {
   return "active";
 }
 
-function Row({ book, selected }: { book: Book; selected: boolean }) {
+function Row({
+  book,
+  selected,
+  onDelete,
+}: {
+  book: Book;
+  selected: boolean;
+  onDelete: (book: Book) => void;
+}) {
   const color = statusColor(book.status);
   return (
     <Link href={`/books/${book.id}`}>
       <div
-        className={`flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer border transition-colors ${
+        className={`group flex items-center gap-3 rounded-lg px-3 py-2.5 cursor-pointer border transition-colors ${
           selected
             ? "bg-indigo-600/15 border-indigo-500/50"
             : "bg-transparent border-transparent hover:bg-gray-800/60"
@@ -56,6 +64,18 @@ function Row({ book, selected }: { book: Book; selected: boolean }) {
             {" · "}r{book.current_round}/{book.max_rounds}
           </p>
         </div>
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onDelete(book);
+          }}
+          title="Delete book"
+          aria-label="Delete book"
+          className="flex-shrink-0 text-gray-600 hover:text-red-400 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity px-1"
+        >
+          🗑
+        </button>
       </div>
     </Link>
   );
@@ -63,11 +83,28 @@ function Row({ book, selected }: { book: Book; selected: boolean }) {
 
 export function BookList() {
   const pathname = usePathname();
+  const router = useRouter();
   const selectedId = pathname?.startsWith("/books/") ? pathname.split("/")[2] : null;
 
   const fetcher = useCallback(() => api.listBooks(), []);
   const [books, loading, error, refresh] = usePolling<Book[]>(fetcher, 5000);
   const [showModal, setShowModal] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function handleDelete(book: Book) {
+    const name = book.title ?? "this book";
+    if (!window.confirm(`Delete "${name}"? This permanently removes it and all its files.`)) {
+      return;
+    }
+    setDeleteError(null);
+    try {
+      await api.deleteBook(book.id);
+      if (book.id === selectedId) router.push("/");
+      refresh();
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : "Delete failed");
+    }
+  }
 
   const groups: Record<GroupKey, Book[]> = { needs: [], active: [], done: [], ended: [] };
   for (const b of books ?? []) groups[group(b)].push(b);
@@ -90,6 +127,7 @@ export function BookList() {
 
       <div className="flex-1 overflow-y-auto px-2 py-3 space-y-4">
         {error && <p className="px-2 text-xs text-red-400">Failed to load: {error}</p>}
+        {deleteError && <p className="px-2 text-xs text-red-400">Delete failed: {deleteError}</p>}
         {books && books.length === 0 && !loading && (
           <p className="px-2 text-xs text-gray-500 italic">No books yet — create one.</p>
         )}
@@ -104,7 +142,12 @@ export function BookList() {
               </div>
               <div className="space-y-0.5">
                 {groups[key].map((b) => (
-                  <Row key={b.id} book={b} selected={b.id === selectedId} />
+                  <Row
+                    key={b.id}
+                    book={b}
+                    selected={b.id === selectedId}
+                    onDelete={handleDelete}
+                  />
                 ))}
               </div>
             </div>

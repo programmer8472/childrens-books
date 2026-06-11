@@ -2,11 +2,12 @@
 import uuid
 from datetime import datetime
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.enums import LEGAL_TRANSITIONS, BookStatus, assert_legal_transition
-from app.db.models import AuditLog, Book
+from app.db.models import AuditLog, Book, CharacterAsset, Image, Judgement, StoryVersion
 
 
 class BookRepo:
@@ -81,6 +82,47 @@ class BookRepo:
         if BookStatus.CANCELLED not in LEGAL_TRANSITIONS.get(book.status, frozenset()):
             return None
         return self.transition(book, BookStatus.CANCELLED, actor="human", note=note)
+
+    def delete(self, book: Book) -> list[str]:
+        """Hard-delete a book and every row that references it.
+
+        There is no cascade configured on the foreign keys, so we remove the
+        child rows explicitly, innermost first. Returns the storage keys
+        (scene/cover images + export artifacts) the caller should purge from
+        object storage — the DB owns truth, storage cleanup is the caller's job.
+        """
+        book_id = book.id
+
+        storage_keys: list[str] = [
+            key
+            for (key,) in self._s.execute(
+                select(Image.storage_key).where(Image.book_id == book_id)
+            )
+        ]
+        for value in (book.export_manifest or {}).values():
+            if isinstance(value, str):
+                storage_keys.append(value)
+            elif isinstance(value, list):
+                storage_keys.extend(v for v in value if isinstance(v, str))
+
+        # books.approved_version_id -> story_versions.id and
+        # story_versions.book_id -> books.id form a cycle; break it before the
+        # story_versions rows go away.
+        book.approved_version_id = None
+        self._s.flush()
+
+        for model in (Judgement, Image, StoryVersion, CharacterAsset, AuditLog):
+            self._s.execute(
+                sa_delete(model)
+                .where(model.book_id == book_id)
+                .execution_options(synchronize_session=False)
+            )
+        self._s.delete(book)
+        self._s.flush()
+
+        # De-dupe while preserving order (a key can appear in both images and
+        # the manifest).
+        return list(dict.fromkeys(storage_keys))
 
     def list_all(self) -> list[Book]:
         stmt = select(Book).order_by(Book.created_at.desc())

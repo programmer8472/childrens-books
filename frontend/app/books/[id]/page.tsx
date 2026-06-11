@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { usePolling, useBookStream } from "@/lib/hooks";
 import type { Book, BookMetadata, Judgement, PipelineEvent, PreviewInfo, StoryVersion } from "@/lib/types";
@@ -8,6 +9,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { ParagraphEditor } from "@/components/ParagraphEditor";
 import { StageTimeline } from "@/components/StageTimeline";
 import { ControlBar } from "@/components/ControlBar";
+import { DeleteButton } from "@/components/DeleteButton";
 
 // ---------------------------------------------------------------------------
 // Judge score display
@@ -878,6 +880,7 @@ export default function BookDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const router = useRouter();
 
   const bookFetcher = useCallback(() => api.getBook(id), [id]);
   const versionsFetcher = useCallback(() => api.getVersions(id), [id]);
@@ -989,6 +992,9 @@ export default function BookDetailPage({
               refreshVersions();
             }}
           />
+        )}
+        {book && (
+          <DeleteButton bookId={id} onDeleted={() => router.push("/")} />
         )}
       </header>
 

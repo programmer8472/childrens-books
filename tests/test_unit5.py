@@ -184,6 +184,62 @@ class TestCancelBook:
 
 
 # ---------------------------------------------------------------------------
+# DELETE /books/{id}
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteBook:
+    def test_deletes_and_returns_204(self, client):
+        book = _fake_book(BookStatus.RETIRED)
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.LocalStorage") as MockStorage,
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            MockRepo.return_value.delete.return_value = []
+            resp = client.delete(f"/books/{book.id}")
+        assert resp.status_code == 204
+        MockRepo.return_value.delete.assert_called_once_with(book)
+
+    def test_purges_returned_storage_keys(self, client):
+        book = _fake_book(BookStatus.CANCELLED)
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.LocalStorage") as MockStorage,
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            MockRepo.return_value.delete.return_value = ["img/a.png", "export/b.pdf"]
+            resp = client.delete(f"/books/{book.id}")
+        assert resp.status_code == 204
+        storage = MockStorage.return_value
+        assert storage.delete.call_count == 2
+        storage.delete.assert_any_call("img/a.png")
+        storage.delete.assert_any_call("export/b.pdf")
+
+    def test_allows_delete_from_running_state(self, client):
+        book = _fake_book(BookStatus.WRITING)
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.LocalStorage"),
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            MockRepo.return_value.delete.return_value = []
+            resp = client.delete(f"/books/{book.id}")
+        assert resp.status_code == 204
+
+    def test_missing_book_404(self, client):
+        bid = uuid.uuid4()
+        with patch("app.api.books.BookRepo") as MockRepo:
+            MockRepo.return_value.get.side_effect = ValueError("nope")
+            resp = client.delete(f"/books/{bid}")
+        assert resp.status_code == 404
+        MockRepo.return_value.delete.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # POST /books
 # ---------------------------------------------------------------------------
 
