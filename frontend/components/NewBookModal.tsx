@@ -2,6 +2,12 @@
 
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
+import {
+  ADHD_CONCEPTS,
+  LOCKED_THEME,
+  randomAdhdConcept,
+  type AdhdConcept,
+} from "@/lib/adhdLibrary";
 
 interface Props {
   onCreated: () => void;
@@ -13,14 +19,38 @@ export function NewBookModal({ onCreated, onClose }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [characters, setCharacters] = useState("");
-  const [setting, setSetting] = useState("");
+  // Start from one coherent concept so the title, characters, setting, and
+  // description all describe the same child. Picking/shuffling swaps the whole
+  // concept; editing any single field marks the idea "custom" but keeps the
+  // rest intact.
+  const [concept] = useState(randomAdhdConcept);
+  const [conceptId, setConceptId] = useState(concept.id);
+  const [title, setTitle] = useState(concept.title);
+  const [description, setDescription] = useState(concept.description);
+  const [characters, setCharacters] = useState(concept.characters);
+  const [setting, setSetting] = useState(concept.setting);
   const [ageRange, setAgeRange] = useState("4-8");
-  const [theme, setTheme] = useState("");
   const [maxRounds, setMaxRounds] = useState(5);
   const [threshold, setThreshold] = useState(7.5);
+
+  function applyConcept(c: AdhdConcept) {
+    setConceptId(c.id);
+    setTitle(c.title);
+    setDescription(c.description);
+    setCharacters(c.characters);
+    setSetting(c.setting);
+  }
+
+  // Editing any field on its own breaks the 1:1 link to a concept, so we mark
+  // the idea custom while leaving the other fields as they are.
+  function editTitle(v: string) { setTitle(v); setConceptId(""); }
+  function editDescription(v: string) { setDescription(v); setConceptId(""); }
+  function editCharacters(v: string) { setCharacters(v); setConceptId(""); }
+  function editSetting(v: string) { setSetting(v); setConceptId(""); }
+
+  function shuffleAll() {
+    applyConcept(randomAdhdConcept());
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -35,7 +65,7 @@ export function NewBookModal({ onCreated, onClose }: Props) {
           characters: characters.trim(),
           setting: setting.trim(),
           age_range: ageRange,
-          theme: theme.trim() || undefined,
+          theme: LOCKED_THEME,
         },
         max_rounds: maxRounds,
         score_threshold: threshold,
@@ -57,8 +87,8 @@ export function NewBookModal({ onCreated, onClose }: Props) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
       onClick={handleOverlayClick}
     >
-      <div className="w-full max-w-lg rounded-xl bg-gray-900 border border-gray-700 shadow-2xl">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+      <div className="w-full max-w-lg rounded-xl bg-gray-900 border border-gray-700 shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-700 sticky top-0 bg-gray-900 z-10">
           <h2 className="text-lg font-semibold text-gray-100">New Book</h2>
           <button
             onClick={onClose}
@@ -69,12 +99,53 @@ export function NewBookModal({ onCreated, onClose }: Props) {
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
+          {/* Locked theme + shuffle */}
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-indigo-950/40 border border-indigo-800/60 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-indigo-300">Theme</span>
+              <span className="inline-flex items-center gap-1 rounded-full bg-indigo-600/30 border border-indigo-500/50 px-2 py-0.5 text-xs font-semibold text-indigo-200">
+                🔒 {LOCKED_THEME}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={shuffleAll}
+              className="text-xs text-indigo-300 hover:text-indigo-100 transition-colors px-2 py-1 rounded hover:bg-indigo-900/40"
+            >
+              🎲 Shuffle idea
+            </button>
+          </div>
+
+          {/* Coherent story-idea picker — loads a whole concept at once */}
+          <Field label="Story idea">
+            <select
+              className={input}
+              value={conceptId}
+              onChange={(e) => {
+                const c = ADHD_CONCEPTS.find((x) => x.id === e.target.value);
+                if (c) applyConcept(c);
+              }}
+            >
+              {conceptId === "" && (
+                <option value="">Custom ✎ — edited from a story idea</option>
+              )}
+              {ADHD_CONCEPTS.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] text-gray-500">
+              Pick a complete idea — the title, characters, setting, and story
+              stay about the same child. Edit any field below to fine-tune.
+            </p>
+          </Field>
+
           <Field label="Working Title *">
             <input
               className={input}
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="The Little Star Who Was Afraid of the Dark"
+              onChange={(e) => editTitle(e.target.value)}
               required
             />
           </Field>
@@ -83,8 +154,7 @@ export function NewBookModal({ onCreated, onClose }: Props) {
             <textarea
               className={`${input} h-24 resize-none`}
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="A brief description of the plot and emotional arc…"
+              onChange={(e) => editDescription(e.target.value)}
               required
             />
           </Field>
@@ -93,8 +163,7 @@ export function NewBookModal({ onCreated, onClose }: Props) {
             <input
               className={input}
               value={characters}
-              onChange={(e) => setCharacters(e.target.value)}
-              placeholder="Mia (brave 6-year-old girl), Luma (her stuffed rabbit)"
+              onChange={(e) => editCharacters(e.target.value)}
             />
           </Field>
 
@@ -102,8 +171,7 @@ export function NewBookModal({ onCreated, onClose }: Props) {
             <input
               className={input}
               value={setting}
-              onChange={(e) => setSetting(e.target.value)}
-              placeholder="A cozy suburban neighborhood, a magical forest nearby"
+              onChange={(e) => editSetting(e.target.value)}
             />
           </Field>
 
@@ -120,14 +188,8 @@ export function NewBookModal({ onCreated, onClose }: Props) {
                 <option value="8-12">8–12 (Middle grade)</option>
               </select>
             </Field>
-
-            <Field label="Theme / Genre">
-              <input
-                className={input}
-                value={theme}
-                onChange={(e) => setTheme(e.target.value)}
-                placeholder="Courage, friendship"
-              />
+            <Field label="Theme">
+              <input className={`${input} opacity-70`} value={LOCKED_THEME} disabled />
             </Field>
           </div>
 

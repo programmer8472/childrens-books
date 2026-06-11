@@ -80,9 +80,27 @@ class TestModelRouting:
                 "sys",
                 [{"role": "user", "content": "judge this"}],
                 json_schema={"type": "object"},
+                tier="fast",
             )
         _, kwargs = mock_client.chat.completions.stream.call_args
         assert kwargs["model"] == _JUDGE_MODEL
+
+    def test_writer_schema_call_still_uses_writer_model(self):
+        # Regression: the writer emits structured JSON (json_schema set) but is
+        # creative work. Model routing must follow tier, NOT json_schema —
+        # otherwise the writer gets the fast judge model + tiny token cap and a
+        # reasoning model truncates to empty output (LengthFinishReasonError).
+        mock_client, _, _, po, pe = _patched_provider(model=_WRITER_MODEL)
+        with po, pe:
+            provider = DeepSeekLLMProvider()
+            provider.generate(
+                "sys",
+                [{"role": "user", "content": "write the story as JSON"}],
+                json_schema={"type": "object"},
+            )
+        _, kwargs = mock_client.chat.completions.stream.call_args
+        assert kwargs["model"] == _WRITER_MODEL
+        assert kwargs["max_tokens"] == _MAX_TOKENS_WRITER
 
     def test_system_prepended_as_first_message(self):
         mock_client, _, _, po, pe = _patched_provider()
@@ -127,6 +145,7 @@ class TestTokenLimits:
                 "sys",
                 [{"role": "user", "content": "judge"}],
                 json_schema={"type": "object"},
+                tier="fast",
             )
         _, kwargs = mock_client.chat.completions.stream.call_args
         assert kwargs["max_tokens"] == _MAX_TOKENS_JUDGE
@@ -204,6 +223,7 @@ class TestCustomModels:
                 "sys",
                 [{"role": "user", "content": "judge"}],
                 json_schema={"type": "object"},
+                tier="fast",
             )
         _, kwargs = mock_client.chat.completions.stream.call_args
         assert kwargs["model"] == "custom-judge"

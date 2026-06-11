@@ -89,7 +89,7 @@ class JudgeAgent:
         messages: list[dict] = [{"role": "user", "content": user_prompt}]
 
         for attempt in range(_MAX_RETRIES):
-            response = self._llm.generate(_SYSTEM_PROMPT, messages, json_schema=_JUDGEMENT_SCHEMA)
+            response = self._llm.generate(_SYSTEM_PROMPT, messages, json_schema=_JUDGEMENT_SCHEMA, tier="fast")
             try:
                 data = json.loads(response.content)
                 return validate_judgement_json(data, self._threshold)

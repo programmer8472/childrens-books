@@ -6,7 +6,7 @@ Strategy:
   - Override the FastAPI `get_session` dependency with a MagicMock session so
     the HTTP layer runs without a real DB.
   - Patch `BookRepo` and task `.delay()` calls per-test to control exact behavior.
-  - The orchestrator `approve/reject` logic is a thin orchestration of
+  - The orchestrator approve/reject logic is a thin orchestration of
     `BookRepo.transition`, so we verify the transition call arguments directly.
 """
 import uuid
@@ -36,6 +36,8 @@ def _fake_book(status: BookStatus = BookStatus.DRAFT_BRIEF) -> SimpleNamespace:
         max_rounds=5,
         current_round=1,
         score_threshold=7.5,
+        approved_version_id=None,
+        cancel_requested=False,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -48,6 +50,7 @@ def _fake_version(book_id: uuid.UUID, round_: int = 1, method: str = "three-act"
         round=round_,
         method=method,
         content="Once upon a time...",
+        shortlisted=False,
         judgements=[],
         created_at=datetime.now(timezone.utc),
     )
@@ -73,25 +76,111 @@ def client():
 
 
 # ---------------------------------------------------------------------------
-# Enum: AWAITING_APPROVAL can now go to REVISION (human reject)
+# Enum: all new statuses present with correct transitions
 # ---------------------------------------------------------------------------
 
 
 class TestEnumUpdate:
-    def test_awaiting_approval_can_transition_to_revision(self):
-        assert BookStatus.REVISION in LEGAL_TRANSITIONS[BookStatus.AWAITING_APPROVAL]
+    def test_awaiting_shortlist_exists(self):
+        assert BookStatus.AWAITING_SHORTLIST in BookStatus
 
-    def test_awaiting_approval_can_transition_to_approved(self):
-        assert BookStatus.APPROVED in LEGAL_TRANSITIONS[BookStatus.AWAITING_APPROVAL]
+    def test_shortlist_judging_exists(self):
+        assert BookStatus.SHORTLIST_JUDGING in BookStatus
 
-    def test_awaiting_approval_can_be_retired(self):
-        assert BookStatus.RETIRED in LEGAL_TRANSITIONS[BookStatus.AWAITING_APPROVAL]
+    def test_awaiting_final_approval_exists(self):
+        assert BookStatus.AWAITING_FINAL_APPROVAL in BookStatus
 
-    def test_assert_legal_transition_revision_from_awaiting(self):
-        assert_legal_transition(BookStatus.AWAITING_APPROVAL, BookStatus.REVISION)
+    def test_judging_can_go_to_awaiting_shortlist(self):
+        assert BookStatus.AWAITING_SHORTLIST in LEGAL_TRANSITIONS[BookStatus.JUDGING]
 
-    def test_all_statuses_still_covered(self):
+    def test_judging_can_still_go_to_revision(self):
+        assert BookStatus.REVISION in LEGAL_TRANSITIONS[BookStatus.JUDGING]
+
+    def test_judging_no_longer_goes_directly_to_awaiting_approval(self):
+        assert BookStatus.AWAITING_APPROVAL not in LEGAL_TRANSITIONS[BookStatus.JUDGING]
+
+    def test_awaiting_shortlist_to_shortlist_judging(self):
+        assert_legal_transition(BookStatus.AWAITING_SHORTLIST, BookStatus.SHORTLIST_JUDGING)
+
+    def test_shortlist_judging_to_awaiting_final_approval(self):
+        assert_legal_transition(BookStatus.SHORTLIST_JUDGING, BookStatus.AWAITING_FINAL_APPROVAL)
+
+    def test_awaiting_final_approval_to_approved(self):
+        assert_legal_transition(BookStatus.AWAITING_FINAL_APPROVAL, BookStatus.APPROVED)
+
+    def test_awaiting_approval_still_has_legal_targets_for_compat(self):
+        targets = LEGAL_TRANSITIONS[BookStatus.AWAITING_APPROVAL]
+        assert BookStatus.APPROVED in targets
+        assert BookStatus.REVISION in targets
+
+    def test_all_statuses_covered(self):
         assert set(LEGAL_TRANSITIONS) == set(BookStatus)
+
+    def test_cancelled_status_exists(self):
+        assert BookStatus.CANCELLED in BookStatus
+
+    def test_running_stage_can_be_cancelled(self):
+        assert BookStatus.CANCELLED in LEGAL_TRANSITIONS[BookStatus.WRITING]
+        assert BookStatus.CANCELLED in LEGAL_TRANSITIONS[BookStatus.GENERATING_IMAGES]
+
+    def test_gate_can_be_cancelled(self):
+        assert BookStatus.CANCELLED in LEGAL_TRANSITIONS[BookStatus.AWAITING_FINAL_APPROVAL]
+
+    def test_cancelled_is_terminal(self):
+        assert LEGAL_TRANSITIONS[BookStatus.CANCELLED] == frozenset()
+
+    def test_finished_book_cannot_be_cancelled(self):
+        assert BookStatus.CANCELLED not in LEGAL_TRANSITIONS[BookStatus.EXPORT_READY]
+        assert BookStatus.CANCELLED not in LEGAL_TRANSITIONS[BookStatus.DONE]
+
+
+# ---------------------------------------------------------------------------
+# POST /books/{id}/cancel
+# ---------------------------------------------------------------------------
+
+
+class TestCancelBook:
+    def test_running_stage_flags_and_does_not_transition(self, client):
+        book = _fake_book(BookStatus.WRITING)
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(f"/books/{book.id}/cancel")
+        assert resp.status_code == 200
+        assert resp.json()["cancelling"] is True
+        MockRepo.return_value.request_cancel.assert_called_once_with(book)
+        MockRepo.return_value.cancel.assert_not_called()
+
+    def test_gate_cancels_immediately(self, client):
+        book = _fake_book(BookStatus.AWAITING_FINAL_APPROVAL)
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(f"/books/{book.id}/cancel")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "CANCELLED"
+        MockRepo.return_value.cancel.assert_called_once()
+
+    def test_terminal_book_rejected(self, client):
+        book = _fake_book(BookStatus.DONE)
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(f"/books/{book.id}/cancel")
+        assert resp.status_code == 400
+
+    def test_missing_book_404(self, client):
+        bid = uuid.uuid4()
+        with patch("app.api.books.BookRepo") as MockRepo:
+            MockRepo.return_value.get.side_effect = ValueError("nope")
+            resp = client.post(f"/books/{bid}/cancel")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +313,6 @@ class TestGetVersions:
         book = _fake_book()
         with patch("app.api.books.BookRepo") as MockRepo:
             MockRepo.return_value.get.return_value = book
-            # scalars() on the mock session returns an empty iterable
             _mock_session_inst = app.dependency_overrides[get_session]()
             resp = client.get(f"/books/{book.id}/versions")
         assert resp.status_code == 200
@@ -237,11 +325,167 @@ class TestGetVersions:
 
 
 # ---------------------------------------------------------------------------
-# POST /books/{id}/approve
+# POST /books/{id}/shortlist
 # ---------------------------------------------------------------------------
 
 
-class TestApproveBook:
+class TestShortlistBook:
+    def test_shortlist_from_awaiting_shortlist_returns_200(self, client):
+        book = _fake_book(BookStatus.AWAITING_SHORTLIST)
+        version_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_rejudge_shortlist") as mock_task,
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(
+                f"/books/{book.id}/shortlist",
+                json={"story_version_ids": version_ids},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "status": "SHORTLIST_JUDGING"}
+
+    def test_shortlist_enqueues_rejudge_task(self, client):
+        book = _fake_book(BookStatus.AWAITING_SHORTLIST)
+        version_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_rejudge_shortlist") as mock_task,
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            client.post(
+                f"/books/{book.id}/shortlist",
+                json={"story_version_ids": version_ids},
+            )
+        mock_task.delay.assert_called_once_with(str(book.id), version_ids)
+
+    def test_shortlist_from_wrong_state_returns_400(self, client):
+        book = _fake_book(BookStatus.WRITING)
+        with patch("app.api.books.BookRepo") as MockRepo:
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(
+                f"/books/{book.id}/shortlist",
+                json={"story_version_ids": [str(uuid.uuid4())]},
+            )
+        assert resp.status_code == 400
+
+    def test_shortlist_empty_list_returns_400(self, client):
+        book = _fake_book(BookStatus.AWAITING_SHORTLIST)
+        with patch("app.api.books.BookRepo") as MockRepo:
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(
+                f"/books/{book.id}/shortlist",
+                json={"story_version_ids": []},
+            )
+        assert resp.status_code == 400
+
+    def test_shortlist_unknown_book_returns_404(self, client):
+        with patch("app.api.books.BookRepo") as MockRepo:
+            MockRepo.return_value.get.side_effect = ValueError("not found")
+            resp = client.post(
+                f"/books/{uuid.uuid4()}/shortlist",
+                json={"story_version_ids": [str(uuid.uuid4())]},
+            )
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /books/{id}/approve — new AWAITING_FINAL_APPROVAL flow
+# ---------------------------------------------------------------------------
+
+
+class TestApproveBookNewFlow:
+    def test_approve_from_awaiting_final_approval_returns_200(self, client):
+        book = _fake_book(BookStatus.AWAITING_FINAL_APPROVAL)
+        version_id = str(uuid.uuid4())
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_generate_images"),
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(
+                f"/books/{book.id}/approve",
+                json={"story_version_id": version_id},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "status": "APPROVED"}
+
+    def test_approve_new_flow_sets_approved_version(self, client):
+        book = _fake_book(BookStatus.AWAITING_FINAL_APPROVAL)
+        version_id = str(uuid.uuid4())
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_generate_images"),
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            client.post(
+                f"/books/{book.id}/approve",
+                json={"story_version_id": version_id},
+            )
+        MockRepo.return_value.set_approved_version.assert_called_once_with(
+            book, uuid.UUID(version_id)
+        )
+
+    def test_approve_new_flow_calls_transition(self, client):
+        book = _fake_book(BookStatus.AWAITING_FINAL_APPROVAL)
+        version_id = str(uuid.uuid4())
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_generate_images"),
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            client.post(
+                f"/books/{book.id}/approve",
+                json={"story_version_id": version_id},
+            )
+        MockRepo.return_value.transition.assert_called_once_with(
+            book, BookStatus.APPROVED, actor="human"
+        )
+
+    def test_approve_new_flow_requires_story_version_id(self, client):
+        book = _fake_book(BookStatus.AWAITING_FINAL_APPROVAL)
+        with patch("app.api.books.BookRepo") as MockRepo:
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(f"/books/{book.id}/approve", json={})
+        assert resp.status_code == 400
+
+    def test_approve_from_wrong_state_returns_400(self, client):
+        book = _fake_book(BookStatus.WRITING)
+        with patch("app.api.books.BookRepo") as MockRepo:
+            MockRepo.return_value.get.return_value = book
+            resp = client.post(
+                f"/books/{book.id}/approve",
+                json={"story_version_id": str(uuid.uuid4())},
+            )
+        assert resp.status_code == 400
+
+    def test_approve_enqueues_generate_images(self, client):
+        book = _fake_book(BookStatus.AWAITING_FINAL_APPROVAL)
+        version_id = str(uuid.uuid4())
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_generate_images") as mock_task,
+            patch("app.api.books.publish_event"),
+        ):
+            MockRepo.return_value.get.return_value = book
+            client.post(
+                f"/books/{book.id}/approve",
+                json={"story_version_id": version_id},
+            )
+        mock_task.delay.assert_called_once_with(str(book.id))
+
+
+# ---------------------------------------------------------------------------
+# POST /books/{id}/approve — legacy AWAITING_APPROVAL backward compat
+# ---------------------------------------------------------------------------
+
+
+class TestApproveBookLegacy:
     def test_approve_from_awaiting_returns_200(self, client):
         book = _fake_book(BookStatus.AWAITING_APPROVAL)
         with (
@@ -254,7 +498,7 @@ class TestApproveBook:
         assert resp.status_code == 200
         assert resp.json() == {"ok": True, "status": "APPROVED"}
 
-    def test_approve_calls_transition(self, client):
+    def test_approve_legacy_calls_transition(self, client):
         book = _fake_book(BookStatus.AWAITING_APPROVAL)
         with (
             patch("app.api.books.BookRepo") as MockRepo,
@@ -267,12 +511,16 @@ class TestApproveBook:
             book, BookStatus.APPROVED, actor="human"
         )
 
-    def test_approve_from_wrong_state_returns_400(self, client):
-        book = _fake_book(BookStatus.WRITING)
-        with patch("app.api.books.BookRepo") as MockRepo:
+    def test_approve_legacy_does_not_set_approved_version(self, client):
+        book = _fake_book(BookStatus.AWAITING_APPROVAL)
+        with (
+            patch("app.api.books.BookRepo") as MockRepo,
+            patch("app.api.books.pipeline_generate_images"),
+            patch("app.api.books.publish_event"),
+        ):
             MockRepo.return_value.get.return_value = book
-            resp = client.post(f"/books/{book.id}/approve")
-        assert resp.status_code == 400
+            client.post(f"/books/{book.id}/approve")
+        MockRepo.return_value.set_approved_version.assert_not_called()
 
     def test_approve_unknown_book_returns_404(self, client):
         with patch("app.api.books.BookRepo") as MockRepo:
@@ -290,7 +538,6 @@ class TestApproveBook:
             MockRepo.return_value.get.return_value = book
             client.post(f"/books/{book.id}/approve")
         mock_pub.assert_called_once()
-        _, kwargs_or_arg = mock_pub.call_args[0], mock_pub.call_args
         event = mock_pub.call_args[0][1]
         assert event["status"] == "APPROVED"
         assert event["actor"] == "human"

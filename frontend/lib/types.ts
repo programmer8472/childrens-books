@@ -4,6 +4,9 @@ export type BookStatus =
   | "WRITING"
   | "JUDGING"
   | "REVISION"
+  | "AWAITING_SHORTLIST"
+  | "SHORTLIST_JUDGING"
+  | "AWAITING_FINAL_APPROVAL"
   | "AWAITING_APPROVAL"
   | "APPROVED"
   | "GENERATING_IMAGES"
@@ -12,13 +15,15 @@ export type BookStatus =
   | "EXPORTING"
   | "EXPORT_READY"
   | "DONE"
-  | "RETIRED";
+  | "RETIRED"
+  | "CANCELLED";
 
 export const RUNNING_STATUSES: BookStatus[] = [
   "OUTLINING",
   "WRITING",
   "JUDGING",
   "REVISION",
+  "SHORTLIST_JUDGING",
   "GENERATING_IMAGES",
   "GENERATING_COVER",
   "DRAFTING_METADATA",
@@ -31,6 +36,9 @@ export const STATUS_LABEL: Record<BookStatus, string> = {
   WRITING: "Writing",
   JUDGING: "Judging",
   REVISION: "Revision",
+  AWAITING_SHORTLIST: "Awaiting Shortlist",
+  SHORTLIST_JUDGING: "Shortlist Judging",
+  AWAITING_FINAL_APPROVAL: "Awaiting Final Approval",
   AWAITING_APPROVAL: "Awaiting Approval",
   APPROVED: "Approved",
   GENERATING_IMAGES: "Generating Images",
@@ -40,15 +48,24 @@ export const STATUS_LABEL: Record<BookStatus, string> = {
   EXPORT_READY: "Export Ready",
   DONE: "Done",
   RETIRED: "Retired",
+  CANCELLED: "Cancelled",
 };
 
-export type StatusColor = "green" | "yellow" | "blue" | "red";
+// gray = queued/new or cancelled (neutral); green is reserved for finished.
+export type StatusColor = "green" | "yellow" | "blue" | "red" | "gray";
 
 export function statusColor(s: BookStatus): StatusColor {
-  if (s === "AWAITING_APPROVAL") return "blue";
+  if (
+    s === "AWAITING_APPROVAL" ||
+    s === "AWAITING_SHORTLIST" ||
+    s === "AWAITING_FINAL_APPROVAL"
+  )
+    return "blue";
   if (s === "RETIRED") return "red";
-  if ((RUNNING_STATUSES as string[]).includes(s)) return "yellow";
-  return "green";
+  if (s === "CANCELLED" || s === "DRAFT_BRIEF") return "gray";
+  if (s === "EXPORT_READY" || s === "DONE") return "green";
+  // Everything else is an active worker stage (incl. APPROVED, OUTLINING).
+  return "yellow";
 }
 
 export interface Book {
@@ -58,6 +75,7 @@ export interface Book {
   current_round: number;
   max_rounds: number;
   score_threshold: number;
+  cancel_requested?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -82,6 +100,7 @@ export interface StoryVersion {
   round: number;
   method: string;
   content: string;
+  shortlisted: boolean;
   judgements: Judgement[];
   created_at: string;
 }
@@ -103,6 +122,23 @@ export interface PipelineEvent {
   round?: number;
   message?: string;
   [key: string]: unknown;
+}
+
+export interface PreflightIssue {
+  check: string;
+  spread_index: number | null;
+  detail: string;
+}
+
+export interface PreflightReport {
+  passed: boolean;
+  page_count: number | null;
+  issues: PreflightIssue[];
+}
+
+export interface PreviewInfo {
+  count: number;
+  preflight: PreflightReport | null;
 }
 
 export interface CreateBookPayload {

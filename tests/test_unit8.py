@@ -438,6 +438,29 @@ class TestMetadataAgent:
         result = MetadataAgent(llm).draft("Story", {})
         assert result["title"] == "The Brave Little Cloud"
 
+    def test_omitted_optional_keys_get_defaults(self):
+        """Model omitting series_name/subtitle must not stall the pipeline."""
+        meta = _fake_metadata()
+        meta.pop("series_name", None)
+        meta.pop("subtitle", None)
+        meta.pop("age_range", None)
+        agent = self._agent_with_response(json.dumps(meta))
+        result = agent.draft("Story", {"age_range": "5-8"})
+        assert result["series_name"] == ""
+        assert result["subtitle"] == ""
+        assert result["age_range"] == "5-8"
+
+    def test_missing_core_key_still_fails(self):
+        """A missing core field (description) must still trigger retry/failure."""
+        from app.agents.metadata import MetadataAgent
+        meta = _fake_metadata()
+        meta.pop("description")
+        llm = FakeLLMProvider()
+        for _ in range(3):
+            llm.push(json.dumps(meta))
+        with pytest.raises(RuntimeError, match="3 attempts"):
+            MetadataAgent(llm).draft("Story", {})
+
     def test_raises_after_three_failures(self):
         from app.agents.metadata import MetadataAgent
         llm = FakeLLMProvider()
@@ -548,6 +571,42 @@ class TestOrchestratorPostApproval:
             orch.export_book(book.id)
             for key in ("interior_pdf", "cover_pdf", "word", "markdown", "text"):
                 assert storage_real.exists(book.export_manifest[key]), f"Missing: {key}"
+
+    def test_generate_images_aborts_when_cancel_requested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            book, book_repo, version_repo, judgement_repo, image_repo, _ = \
+                _make_book_with_approved_version()
+            book.cancel_requested = True  # human stop set before the image loop
+            storage_real = LocalStorage(tmp)
+            orch = _make_orchestrator(
+                book_repo, version_repo, judgement_repo, image_repo, storage_real
+            )
+            orch.generate_images(book.id)
+        # Aborted before generating any image and before advancing to the cover stage.
+        assert image_repo.list_for_book(book.id, kind="scene") == []
+        assert book.status == BookStatus.GENERATING_IMAGES
+
+    def test_export_retires_book_when_preflight_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            book, book_repo, version_repo, judgement_repo, image_repo, _ = \
+                _make_book_with_approved_version()
+            # Force the approved version to carry wildly over-budget spreads,
+            # reproducing the clipped-text defect at the source.
+            version = version_repo.list_for_round(book.id, 1)[0]
+            version.spreads = [" ".join(f"word{i}" for i in range(120))] * 12
+            storage_real = LocalStorage(tmp)
+            orch = _make_orchestrator(
+                book_repo, version_repo, judgement_repo, image_repo, storage_real
+            )
+            llm = FakeLLMProvider()
+            llm.push(json.dumps(_fake_metadata()))
+            orch._llm = llm
+            orch.generate_images(book.id)
+            orch.generate_cover(book.id)
+            orch.draft_metadata(book.id)
+            orch.export_book(book.id)
+        assert book.status == BookStatus.RETIRED
+        assert book.export_manifest["preflight"]["passed"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -678,3 +737,36 @@ class TestExportAPI:
             MockRepo.return_value.get.return_value = book
             resp = client.get(f"/books/{book.id}/export/nonexistent")
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Story splitter — narrative order must be preserved across spreads
+# ---------------------------------------------------------------------------
+
+
+class TestSplitStory:
+    def test_preserves_narrative_order(self):
+        """Paragraphs must land in contiguous, in-order chunks — not round-robin
+        scrambled across spreads."""
+        from app.compositor.pdf_writer import _split_story
+        paras = [f"P{i}" for i in range(12)]
+        text = "\n\n".join(paras)
+        segments = _split_story(text, 4)
+        assert segments == ["P0 P1 P2", "P3 P4 P5", "P6 P7 P8", "P9 P10 P11"]
+
+    def test_remainder_goes_to_earlier_buckets(self):
+        from app.compositor.pdf_writer import _split_story
+        text = "\n\n".join(f"P{i}" for i in range(5))
+        segments = _split_story(text, 3)
+        # 5 paras / 3 buckets → sizes 2,2,1, in order
+        assert segments == ["P0 P1", "P2 P3", "P4"]
+
+    def test_fewer_paragraphs_than_spreads_pads_empty(self):
+        from app.compositor.pdf_writer import _split_story
+        segments = _split_story("Only one.", 4)
+        assert segments[0] == "Only one."
+        assert segments[1:] == ["", "", ""]
+
+    def test_empty_text_returns_n_empty(self):
+        from app.compositor.pdf_writer import _split_story
+        assert _split_story("", 3) == ["", "", ""]

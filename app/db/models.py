@@ -22,12 +22,22 @@ class Book(Base):
     max_rounds: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=5)
     current_round: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     score_threshold: Mapped[float] = mapped_column(sa.Float, nullable=False, default=7.5)
+    # Set by a human stop request; pipeline tasks check it at each stage boundary
+    # and transition the book to CANCELLED rather than enqueuing the next stage.
+    cancel_requested: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, server_default=sa.false())
     book_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     export_manifest: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    approved_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.UUID(as_uuid=True), sa.ForeignKey("story_versions.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False)
 
-    story_versions: Mapped[list["StoryVersion"]] = relationship(back_populates="book", order_by="StoryVersion.created_at")
+    story_versions: Mapped[list["StoryVersion"]] = relationship(
+        back_populates="book",
+        order_by="StoryVersion.created_at",
+        foreign_keys="[StoryVersion.book_id]",
+    )
     character_assets: Mapped[list["CharacterAsset"]] = relationship(back_populates="book")
     audit_log: Mapped[list["AuditLog"]] = relationship(back_populates="book", order_by="AuditLog.created_at")
 
@@ -40,10 +50,15 @@ class StoryVersion(Base):
     round: Mapped[int] = mapped_column(sa.Integer, nullable=False)
     method: Mapped[str] = mapped_column(sa.Text, nullable=False)
     content: Mapped[str] = mapped_column(sa.Text, nullable=False)
+    # Structured per-spread text (list of 12 strings). Nullable for legacy rows
+    # written before the structured-writer change; compositor falls back to
+    # paginating `content` when this is absent.
+    spreads: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     prior_critique: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    shortlisted: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, server_default=sa.false())
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False)
 
-    book: Mapped["Book"] = relationship(back_populates="story_versions")
+    book: Mapped["Book"] = relationship(back_populates="story_versions", foreign_keys="[StoryVersion.book_id]")
     judgements: Mapped[list["Judgement"]] = relationship(back_populates="story_version")
 
 

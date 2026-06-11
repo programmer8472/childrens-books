@@ -1,6 +1,52 @@
 """Shared data types for agent outputs."""
 from dataclasses import dataclass
 
+# Spec: book-design-spec.md §Typography — words per spread.
+# Ages 3-5: <= 30 words; ages 5-8: <= 75 words. These are the binding caps
+# enforced at judging time and re-asserted by the compositor preflight.
+NUM_STORY_SPREADS = 12
+WORD_BUDGET_YOUNG = 30
+WORD_BUDGET_OLDER = 75
+
+
+def word_budget(age_range: str) -> int:
+    """Return the per-spread word cap for an age-range string.
+
+    Mirrors typography.body_font_size: ages 3-5 (with no 6/7/8) read as the
+    "young" band; everything else uses the older band.
+    """
+    ar = age_range or ""
+    young = ("3" in ar or "4" in ar or "5" in ar) and not any(d in ar for d in ("6", "7", "8"))
+    return WORD_BUDGET_YOUNG if young else WORD_BUDGET_OLDER
+
+
+def count_words(text: str) -> int:
+    return len((text or "").split())
+
+
+@dataclass
+class SpreadBudgetViolation:
+    index: int          # 0-based spread index
+    word_count: int
+    budget: int
+
+    def message(self) -> str:
+        return (
+            f"Spread {self.index + 1} has {self.word_count} words; "
+            f"cap is {self.budget}. Tighten to one beat per spread."
+        )
+
+
+def check_spread_budget(spreads: list[str], age_range: str) -> list[SpreadBudgetViolation]:
+    """Return a violation for every spread whose word count exceeds the age cap."""
+    budget = word_budget(age_range)
+    violations: list[SpreadBudgetViolation] = []
+    for i, spread in enumerate(spreads):
+        wc = count_words(spread)
+        if wc > budget:
+            violations.append(SpreadBudgetViolation(index=i, word_count=wc, budget=budget))
+    return violations
+
 
 _SCORE_DIMENSIONS = (
     "emotional_authenticity",

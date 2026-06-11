@@ -11,27 +11,29 @@ from pathlib import Path
 
 from PIL import Image as PilImage
 from reportlab.lib.colors import Color
-from reportlab.lib.units import inch
 from reportlab.pdfgen.canvas import Canvas
 
 from app.compositor import color as colormod
-from app.compositor.spread_types import SpreadType
+# Page geometry is owned by spread_types; re-exported here for back-compat
+# (pdf_writer and tests import PAGE_W/PAGE_H/SAFE_INSET from page_renderer).
+from app.compositor.spread_types import (
+    BLEED,
+    GUTTER,
+    PAGE_H,
+    PAGE_W,
+    SAFE_INSET,
+    SpreadType,
+    text_box,
+)
 from app.compositor.typography import (
     FONT_BODY,
     LEADING_MULTIPLIER,
     SIZE_BODY_YOUNG,
     ensure_fonts_registered,
+    fit_text_block,
     needs_contrast_pill,
     pick_text_color,
-    wrap_text,
 )
-
-# Spec dimensions (all in points at 72 pt/inch).
-PAGE_W = 8.75 * inch   # bleed page width
-PAGE_H = 8.75 * inch   # bleed page height
-BLEED = 0.125 * inch
-SAFE_INSET = 0.375 * inch   # safe content zone from trim edge = 3× bleed
-GUTTER = 0.5 * inch         # spine-side margin
 
 # Double-spread is two pages side by side
 SPREAD_W = 2 * PAGE_W
@@ -109,6 +111,27 @@ def _draw_text_block(
         ty -= leading
 
 
+def _draw_fitted_text(
+    c: Canvas,
+    text: str,
+    spread_type: SpreadType,
+    font_size: float,
+    text_color: tuple[int, int, int],
+    bg_sample: tuple[int, int, int] | None,
+) -> None:
+    """Fit text into the spread's reserved box and draw it top-anchored.
+
+    Uses fit_text_block so the block can never extend below its box — the
+    guarantee that makes clipping structurally impossible. When text cannot fit
+    even at the minimum size (which preflight independently rejects), it is
+    still rendered at the floor size so the rejected PDF is inspectable.
+    """
+    box = text_box(spread_type)
+    fit = fit_text_block(text, box.w, box.h, font_size)
+    top_baseline = box.y + box.h - fit.size  # first line near box top, descends
+    _draw_text_block(c, fit.lines, box.x, top_baseline, fit.size, text_color, bg_sample, box.w)
+
+
 def render_spread(
     c: Canvas,
     spread_type: SpreadType,
@@ -124,50 +147,24 @@ def render_spread(
     Caller must call c.showPage() after this function (once per physical page).
     """
     ensure_fonts_registered()
-    lines = wrap_text(text, max_chars=40)
-    text_x = SAFE_INSET
-    text_y = PAGE_H - SAFE_INSET - font_size * LEADING_MULTIPLIER
 
-    if spread_type == SpreadType.FULL_BLEED_DOUBLE:
-        # Image spans both pages; text floats in lower-left safe zone.
-        if image_bytes:
-            _draw_full_bleed_image(c, image_bytes, 0, 0, PAGE_W, PAGE_H)
-            bg = _sample_bg_color(image_bytes, "bottom")
-        else:
-            bg = (180, 200, 220)
-        tc = pick_text_color(bg)
-        _draw_text_block(c, lines, text_x, text_y * 0.5, font_size, tc, bg, PAGE_W - 2 * SAFE_INSET)
-
-    elif spread_type == SpreadType.FULL_BLEED_SINGLE_WITH_TEXT_PAGE:
+    if spread_type == SpreadType.FULL_BLEED_SINGLE_WITH_TEXT_PAGE:
         # Right page: illustration (shown on next showPage call by caller).
         # Current page: clean white + text.
-        text_x_adj = SAFE_INSET
-        _draw_text_block(c, lines, text_x_adj, text_y, font_size, (26, 26, 26))
-
-    elif spread_type == SpreadType.FULL_BLEED_SINGLE_OVERLAY:
-        # Image on this page; text overlays in bottom-left corner.
-        if image_bytes:
-            _draw_full_bleed_image(c, image_bytes, 0, 0, PAGE_W, PAGE_H)
-            bg = _sample_bg_color(image_bytes, "bottom")
-        else:
-            bg = (180, 200, 220)
-        tc = pick_text_color(bg)
-        overlay_y = SAFE_INSET + font_size * LEADING_MULTIPLIER * len(lines) + 8
-        _draw_text_block(c, lines, text_x, overlay_y, font_size, tc, bg, PAGE_W * 0.6)
+        _draw_fitted_text(c, text, spread_type, font_size, (26, 26, 26), None)
 
     elif spread_type == SpreadType.PORTRAIT_WITH_CAPTION_BELOW:
-        # Image fills top 65-70% of page; text in generous white below.
-        illus_h = PAGE_H * 0.66
+        # Image fills the top of the page; text in generous white below.
+        illus_h = PAGE_H * 0.58
         if image_bytes:
             _draw_full_bleed_image(c, image_bytes, 0, PAGE_H - illus_h, PAGE_W, illus_h)
-        text_y_adj = PAGE_H - illus_h - SAFE_INSET
-        _draw_text_block(c, lines, text_x, text_y_adj, font_size, (26, 26, 26))
+        _draw_fitted_text(c, text, spread_type, font_size, (26, 26, 26), None)
 
     elif spread_type == SpreadType.VIGNETTE:
-        # Illustration floats centered on white; text below.
-        vign_size = PAGE_W * 0.70
+        # Illustration floats centered in the upper area; text in a lower band.
+        vign_size = PAGE_W * 0.55
         vign_x = (PAGE_W - vign_size) / 2
-        vign_y = (PAGE_H - vign_size) / 2 + vign_size * 0.1
+        vign_y = PAGE_H - SAFE_INSET - vign_size  # anchored to top safe edge
         if image_bytes:
             pil = _load_image_bytes(image_bytes)
             cmyk = colormod.to_cmyk(pil)
@@ -175,7 +172,17 @@ def render_spread(
             cmyk.save(buf, format="JPEG", quality=92)
             buf.seek(0)
             from reportlab.lib.utils import ImageReader
-            c.drawImage(ImageReader(buf), vign_x, vign_y, width=vign_size, height=vign_size * 0.8,
+            c.drawImage(ImageReader(buf), vign_x, vign_y, width=vign_size, height=vign_size,
                         preserveAspectRatio=True, mask="auto")
-        text_y_adj = vign_y - SAFE_INSET
-        _draw_text_block(c, lines, text_x, text_y_adj, font_size, (26, 26, 26))
+        _draw_fitted_text(c, text, spread_type, font_size, (26, 26, 26), None)
+
+    else:
+        # FULL_BLEED_DOUBLE / FULL_BLEED_SINGLE_OVERLAY: full-bleed image with a
+        # text band over the lower-left, contrast-treated against the image.
+        if image_bytes:
+            _draw_full_bleed_image(c, image_bytes, 0, 0, PAGE_W, PAGE_H)
+            bg = _sample_bg_color(image_bytes, "bottom")
+        else:
+            bg = (180, 200, 220)
+        tc = pick_text_color(bg)
+        _draw_fitted_text(c, text, spread_type, font_size, tc, bg)

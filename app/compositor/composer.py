@@ -40,14 +40,35 @@ class BookComposer:
         story_text: str,
         images: list[bytes | None],
         metadata: dict,
+        spreads: list[str] | None = None,
     ) -> str:
         """Generate interior PDF; return storage key."""
         ensure_fonts_registered()
         buf = io.BytesIO()
-        assemble_interior(buf, story_text, images, metadata)
+        assemble_interior(buf, story_text, images, metadata, spreads=spreads)
         key = f"exports/{book_id}/interior.pdf"
         self._storage.put(key, buf.getvalue())
         return key
+
+    def render_previews(self, book_id: uuid.UUID, interior_pdf: bytes, dpi: int = 96) -> list[str]:
+        """Rasterize each interior page to a PNG preview; return ordered keys.
+
+        These are the in-app visual-QA images shown before final sign-off, so a
+        human sees the real composed pages — not just metadata. Low DPI keeps
+        them light; the print PDF remains the source of truth.
+        """
+        import fitz  # PyMuPDF — pure-wheel PDF rasterizer
+
+        keys: list[str] = []
+        zoom = dpi / 72.0
+        matrix = fitz.Matrix(zoom, zoom)
+        with fitz.open(stream=interior_pdf, filetype="pdf") as doc:
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                key = f"exports/{book_id}/previews/page_{i + 1:02d}.png"
+                self._storage.put(key, pix.tobytes("png"))
+                keys.append(key)
+        return keys
 
     def compose_cover(
         self,
@@ -122,9 +143,13 @@ class BookComposer:
         interior_images: list[bytes | None],
         cover_image: bytes | None,
         metadata: dict,
+        spreads: list[str] | None = None,
     ) -> dict:
         """Run all exports; return manifest dict of storage keys."""
-        interior_key = self.compose_interior(book_id, story_text, interior_images, metadata)
+        interior_key = self.compose_interior(
+            book_id, story_text, interior_images, metadata, spreads=spreads
+        )
+        previews = self.render_previews(book_id, self._storage.get(interior_key))
         cover_key = self.compose_cover(book_id, cover_image, metadata)
         word_key = self.export_word(book_id, story_text, metadata)
         md_key = self.export_markdown(book_id, story_text, metadata)
@@ -137,4 +162,5 @@ class BookComposer:
             "markdown": md_key,
             "text": txt_key,
             "images_folder": images_folder,
+            "previews": previews,
         }

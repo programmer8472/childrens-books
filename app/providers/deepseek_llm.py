@@ -1,9 +1,16 @@
 """DeepSeekLLMProvider — calls the DeepSeek API via the OpenAI-compatible endpoint.
 
-Writer calls (json_schema=None) use deepseek-v4-pro for creative quality.
-Judge calls (json_schema is not None) use deepseek-v4-flash; the judge's
-system prompt already enforces JSON output and the agent has retry logic for
-malformed parses, so no additional schema enforcement is needed here.
+Model selection is driven by the caller's `tier`, NOT by json_schema:
+  - tier="high" (default) → deepseek-v4-pro, large token budget. Creative
+    authoring (writer, paragraph rewrite). These emit long structured stories;
+    deepseek-v4-pro is a reasoning model, so the budget must comfortably cover
+    reasoning tokens AND the visible output or the response truncates to empty.
+  - tier="fast" → deepseek-v4-flash, small default budget. Evaluation and
+    structured extraction (judge, metadata).
+
+json_schema is accepted for interface compatibility but DeepSeek relies on the
+agents' system prompts (which already mandate JSON) plus their retry-on-bad-JSON
+logic, so it does not affect routing or the request.
 
 Reads DEEPSEEK_API_KEY from the environment.
 """
@@ -18,7 +25,11 @@ _WRITER_MODEL = "deepseek-v4-pro"
 _JUDGE_MODEL = "deepseek-v4-flash"
 
 _MAX_TOKENS_WRITER = 8192
-_MAX_TOKENS_JUDGE = 1024
+# deepseek-v4-flash is a reasoning model: reasoning_tokens count against this
+# budget BEFORE any visible content. 1024 was routinely consumed entirely by
+# reasoning, leaving zero output and a length-truncation error. Give the small
+# judgement/metadata JSON ample headroom above the reasoning overhead.
+_MAX_TOKENS_JUDGE = 4096
 
 
 class DeepSeekLLMProvider(LLMProvider):
@@ -42,10 +53,13 @@ class DeepSeekLLMProvider(LLMProvider):
         messages: list,
         *,
         json_schema: dict | None = None,
+        max_tokens: int | None = None,
+        tier: str = "high",
     ) -> LLMResponse:
-        is_judge = json_schema is not None
-        model = self._judge_model if is_judge else self._writer_model
-        max_tokens = _MAX_TOKENS_JUDGE if is_judge else _MAX_TOKENS_WRITER
+        use_fast = tier == "fast"
+        model = self._judge_model if use_fast else self._writer_model
+        default_limit = _MAX_TOKENS_JUDGE if use_fast else _MAX_TOKENS_WRITER
+        max_tokens = max_tokens if max_tokens is not None else default_limit
 
         api_messages = [{"role": "system", "content": system}, *messages]
 

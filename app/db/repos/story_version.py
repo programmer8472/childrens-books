@@ -18,6 +18,7 @@ class StoryVersionRepo:
         method: str,
         content: str,
         *,
+        spreads: list | None = None,
         prior_critique: str | None = None,
     ) -> StoryVersion:
         version = StoryVersion(
@@ -25,6 +26,7 @@ class StoryVersionRepo:
             round=round,
             method=method,
             content=content,
+            spreads=spreads,
             prior_critique=prior_critique,
         )
         self._s.add(version)
@@ -49,6 +51,19 @@ class StoryVersionRepo:
         stmt = (
             select(StoryVersion)
             .where(StoryVersion.book_id == book_id, StoryVersion.round == round)
+            .order_by(StoryVersion.created_at)
+        )
+        return list(self._s.scalars(stmt))
+
+    def set_shortlisted(self, version_id: uuid.UUID, shortlisted: bool) -> None:
+        version = self.get(version_id)
+        version.shortlisted = shortlisted
+        self._s.flush()
+
+    def list_shortlisted_for_book(self, book_id: uuid.UUID) -> list[StoryVersion]:
+        stmt = (
+            select(StoryVersion)
+            .where(StoryVersion.book_id == book_id, StoryVersion.shortlisted.is_(True))
             .order_by(StoryVersion.created_at)
         )
         return list(self._s.scalars(stmt))

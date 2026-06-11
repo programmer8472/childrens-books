@@ -1,13 +1,13 @@
 "use client";
 
-import Link from "next/link";
 import { use, useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { usePolling, useBookStream } from "@/lib/hooks";
-import type { Book, BookMetadata, Judgement, PipelineEvent, StoryVersion } from "@/lib/types";
-import { STATUS_LABEL } from "@/lib/types";
+import type { Book, BookMetadata, Judgement, PipelineEvent, PreviewInfo, StoryVersion } from "@/lib/types";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ParagraphEditor } from "@/components/ParagraphEditor";
+import { StageTimeline } from "@/components/StageTimeline";
+import { ControlBar } from "@/components/ControlBar";
 
 // ---------------------------------------------------------------------------
 // Judge score display
@@ -139,11 +139,16 @@ function VersionCard({
       <div className="px-5 py-3 flex items-center justify-between border-b border-gray-700/50">
         <div className="flex items-center gap-3">
           <span className="text-xs font-mono text-gray-400">
-            {version.method}
+            R{version.round} / {version.method}
           </span>
           {isBest && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-900/50 text-indigo-300 border border-indigo-700/50">
               Best
+            </span>
+          )}
+          {version.shortlisted && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-900/50 text-blue-300 border border-blue-700/50">
+              Shortlisted
             </span>
           )}
         </div>
@@ -243,27 +248,273 @@ function EventFeed({ events, connected }: { events: PipelineEvent[]; connected: 
         {events.length === 0 && (
           <p className="text-gray-600 italic">Waiting for events…</p>
         )}
-        {events.map((ev, i) => (
-          <div key={i} className="text-gray-400">
-            <span className="text-gray-600 mr-2">
-              {new Date().toLocaleTimeString()}
-            </span>
-            <span className="text-indigo-400">{ev.type}</span>
-            {ev.status && (
-              <span className="text-yellow-400 ml-2">→ {ev.status}</span>
-            )}
-            {ev.message && (
-              <span className="text-gray-500 ml-2">{ev.message}</span>
-            )}
-          </div>
-        ))}
+        {events.map((ev, i) => {
+          const failed = ev.type === "failed";
+          return (
+            <div key={i} className={failed ? "text-red-400" : "text-gray-400"}>
+              <span className="text-gray-600 mr-2">
+                {new Date().toLocaleTimeString()}
+              </span>
+              <span className={failed ? "text-red-400 font-semibold" : "text-indigo-400"}>
+                {ev.type}
+              </span>
+              {ev.stage != null && (
+                <span className="text-gray-500 ml-2">@ {String(ev.stage)}</span>
+              )}
+              {ev.status && (
+                <span className={`ml-2 ${failed ? "text-red-300" : "text-yellow-400"}`}>
+                  → {ev.status}
+                </span>
+              )}
+              {ev.error != null && (
+                <span className="text-red-300 ml-2">{String(ev.error)}</span>
+              )}
+              {ev.message && (
+                <span className="text-gray-500 ml-2">{ev.message}</span>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Approval gate
+// Phase 1: shortlist gate (AWAITING_SHORTLIST)
+// ---------------------------------------------------------------------------
+
+function ShortlistGate({
+  bookId,
+  versions,
+  onAction,
+}: {
+  bookId: string;
+  versions: StoryVersion[];
+  onAction: () => void;
+}) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function handleReJudge() {
+    if (selected.size === 0) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await api.shortlistVersions(bookId, [...selected]);
+      onAction();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to submit shortlist");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border-2 border-blue-500/60 bg-blue-950/20 p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="h-2.5 w-2.5 rounded-full bg-blue-400 animate-pulse" />
+        <h3 className="text-base font-semibold text-blue-200">Select Shortlist</h3>
+      </div>
+      <p className="text-sm text-blue-300/80 mb-4">
+        Check the story variants you want re-judged head-to-head. You can pick
+        from any round. Then click Re-Judge Selected.
+      </p>
+      <div className="space-y-2 mb-4">
+        {versions.map((v) => {
+          const topScore =
+            v.judgements.length > 0
+              ? Math.max(...v.judgements.map((j) => j.weighted_total))
+              : null;
+          return (
+            <label
+              key={v.id}
+              className={`flex items-center gap-3 rounded-lg px-4 py-3 cursor-pointer border transition-colors ${
+                selected.has(v.id)
+                  ? "border-blue-500/60 bg-blue-900/20"
+                  : "border-gray-700 bg-gray-800/50 hover:border-gray-600"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(v.id)}
+                onChange={() => toggle(v.id)}
+                className="accent-blue-500 h-4 w-4 flex-shrink-0"
+              />
+              <span className="text-xs font-mono text-gray-300 min-w-[130px]">
+                R{v.round} / {v.method}
+              </span>
+              {topScore !== null && (
+                <span
+                  className={`text-xs tabular-nums ${
+                    topScore >= 8
+                      ? "text-green-400"
+                      : topScore >= 6
+                      ? "text-yellow-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  {topScore.toFixed(2)}
+                </span>
+              )}
+            </label>
+          );
+        })}
+      </div>
+      <button
+        onClick={handleReJudge}
+        disabled={loading || selected.size === 0}
+        className="w-full py-2.5 rounded-lg bg-blue-700 text-white text-sm font-semibold hover:bg-blue-600 disabled:opacity-50 transition-colors"
+      >
+        {loading
+          ? "Submitting…"
+          : `Re-Judge Selected (${selected.size})`}
+      </button>
+      {error && (
+        <p className="mt-3 text-sm text-red-400 bg-red-950/50 rounded px-3 py-2">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: shortlist judging in progress (SHORTLIST_JUDGING)
+// ---------------------------------------------------------------------------
+
+function ShortlistJudgingView() {
+  return (
+    <div className="rounded-xl border-2 border-yellow-500/40 bg-yellow-950/10 p-5">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="h-2.5 w-2.5 rounded-full bg-yellow-400 animate-pulse" />
+        <h3 className="text-base font-semibold text-yellow-200">Re-Judging Shortlist…</h3>
+      </div>
+      <p className="text-sm text-yellow-300/70">
+        The judge is scoring your selected stories. This page will update
+        automatically when it finishes.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: final approval gate (AWAITING_FINAL_APPROVAL)
+// ---------------------------------------------------------------------------
+
+function FinalApprovalGate({
+  bookId,
+  versions,
+  onAction,
+}: {
+  bookId: string;
+  versions: StoryVersion[];
+  onAction: () => void;
+}) {
+  const shortlisted = versions.filter((v) => v.shortlisted);
+  const [selected, setSelected] = useState<string | null>(
+    shortlisted.length > 0 ? shortlisted[0].id : null
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleApprove() {
+    if (!selected) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await api.approveBook(bookId, selected);
+      onAction();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to approve");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border-2 border-blue-500/60 bg-blue-950/20 p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="h-2.5 w-2.5 rounded-full bg-blue-400 animate-pulse" />
+        <h3 className="text-base font-semibold text-blue-200">Final Approval</h3>
+      </div>
+      <p className="text-sm text-blue-300/80 mb-4">
+        Select the story you want to publish, then click Approve to start image
+        generation.
+      </p>
+      <div className="space-y-2 mb-4">
+        {shortlisted.map((v) => {
+          const topScore =
+            v.judgements.length > 0
+              ? Math.max(...v.judgements.map((j) => j.weighted_total))
+              : null;
+          return (
+            <label
+              key={v.id}
+              className={`flex items-center gap-3 rounded-lg px-4 py-3 cursor-pointer border transition-colors ${
+                selected === v.id
+                  ? "border-green-500/60 bg-green-900/20"
+                  : "border-gray-700 bg-gray-800/50 hover:border-gray-600"
+              }`}
+            >
+              <input
+                type="radio"
+                name="final_version"
+                checked={selected === v.id}
+                onChange={() => setSelected(v.id)}
+                className="accent-green-500 h-4 w-4 flex-shrink-0"
+              />
+              <span className="text-xs font-mono text-gray-300 min-w-[130px]">
+                R{v.round} / {v.method}
+              </span>
+              {topScore !== null && (
+                <span
+                  className={`text-xs tabular-nums font-semibold ${
+                    topScore >= 8
+                      ? "text-green-400"
+                      : topScore >= 6
+                      ? "text-yellow-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  {topScore.toFixed(2)}
+                </span>
+              )}
+            </label>
+          );
+        })}
+        {shortlisted.length === 0 && (
+          <p className="text-sm text-gray-500 italic px-1">
+            No shortlisted versions found.
+          </p>
+        )}
+      </div>
+      <button
+        onClick={handleApprove}
+        disabled={loading || !selected}
+        className="w-full py-2.5 rounded-lg bg-green-700 text-white text-sm font-semibold hover:bg-green-600 disabled:opacity-50 transition-colors"
+      >
+        {loading ? "Approving…" : "✓ Approve Selected"}
+      </button>
+      {error && (
+        <p className="mt-3 text-sm text-red-400 bg-red-950/50 rounded px-3 py-2">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Legacy approval gate (AWAITING_APPROVAL — backward compat)
 // ---------------------------------------------------------------------------
 
 function ApprovalGate({
@@ -501,22 +752,117 @@ function ExportPanel({ bookId }: { bookId: string }) {
       )}
       {manifest && (
         <div className="space-y-2">
-          {Object.keys(manifest).map((artifact) => (
+          {Object.keys(manifest)
+            .filter((artifact) => artifact in ARTIFACT_LABELS)
+            .map((artifact) => (
+              <a
+                key={artifact}
+                href={api.exportUrl(bookId, artifact)}
+                download
+                className="flex items-center justify-between rounded-lg bg-gray-900 border border-gray-700 px-4 py-2.5 hover:border-indigo-500/50 transition-colors group"
+              >
+                <span className="text-sm text-gray-200">
+                  {ARTIFACT_LABELS[artifact] ?? artifact}
+                </span>
+                <span className="text-xs text-indigo-400 group-hover:text-indigo-300 transition-colors">
+                  Download ↓
+                </span>
+              </a>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Preview gallery (visual QA): rendered pages + preflight badge
+// ---------------------------------------------------------------------------
+
+function PreviewGallery({ bookId }: { bookId: string }) {
+  const [info, setInfo] = useState<PreviewInfo | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api
+      .getPreviews(bookId)
+      .then((p) => {
+        if (!cancelled) setInfo(p);
+      })
+      .catch((e) => {
+        if (!cancelled)
+          setError(e instanceof Error ? e.message : "Failed to load previews");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bookId]);
+
+  const preflight = info?.preflight ?? null;
+
+  return (
+    <div className="rounded-xl bg-gray-800/50 border border-gray-700 p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-base font-semibold text-gray-100">
+          Page Previews
+        </h3>
+        {preflight && (
+          <span
+            className={`text-xs font-medium px-2.5 py-1 rounded-full ${
+              preflight.passed
+                ? "bg-green-500/15 text-green-400 border border-green-500/30"
+                : "bg-red-500/15 text-red-400 border border-red-500/30"
+            }`}
+          >
+            {preflight.passed ? "Preflight ✓ passed" : "Preflight ✗ failed"}
+          </span>
+        )}
+      </div>
+
+      {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
+      {loading && <p className="text-sm text-gray-400">Loading previews…</p>}
+
+      {preflight && !preflight.passed && preflight.issues.length > 0 && (
+        <ul className="mb-4 space-y-1 text-xs text-red-300 list-disc list-inside">
+          {preflight.issues.map((issue, i) => (
+            <li key={i}>{issue.detail}</li>
+          ))}
+        </ul>
+      )}
+
+      {info && info.count > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {Array.from({ length: info.count }).map((_, i) => (
             <a
-              key={artifact}
-              href={api.exportUrl(bookId, artifact)}
-              download
-              className="flex items-center justify-between rounded-lg bg-gray-900 border border-gray-700 px-4 py-2.5 hover:border-indigo-500/50 transition-colors group"
+              key={i}
+              href={api.previewUrl(bookId, i)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block rounded-lg overflow-hidden border border-gray-700 hover:border-indigo-500/50 transition-colors"
             >
-              <span className="text-sm text-gray-200">
-                {ARTIFACT_LABELS[artifact] ?? artifact}
-              </span>
-              <span className="text-xs text-indigo-400 group-hover:text-indigo-300 transition-colors">
-                Download ↓
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={api.previewUrl(bookId, i)}
+                alt={`Page ${i + 1}`}
+                className="w-full h-auto bg-white"
+                loading="lazy"
+              />
+              <span className="block text-center text-[10px] text-gray-400 py-1">
+                Page {i + 1}
               </span>
             </a>
           ))}
         </div>
+      )}
+
+      {info && info.count === 0 && !loading && (
+        <p className="text-sm text-gray-400">No previews available.</p>
       )}
     </div>
   );
@@ -556,17 +902,24 @@ export default function BookDetailPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events.length]);
 
-  // Latest round's versions
-  const latestRound =
-    versions && versions.length > 0
-      ? Math.max(...versions.map((v) => v.round))
-      : 0;
-  const latestVersions = (versions ?? []).filter(
-    (v) => v.round === latestRound
-  );
+  const status = book?.status;
 
-  // Best version by top judgement score
-  const bestVersionId = latestVersions.reduce<string | null>((bestId, v) => {
+  // Which set of versions to display in the cards section
+  const allVersions = versions ?? [];
+  const latestRound =
+    allVersions.length > 0 ? Math.max(...allVersions.map((v) => v.round)) : 0;
+  const latestVersions = allVersions.filter((v) => v.round === latestRound);
+
+  // Show all versions across all rounds during the shortlist phases so the
+  // human can compare everything before picking a shortlist.
+  const showAllRounds =
+    status === "AWAITING_SHORTLIST" ||
+    status === "SHORTLIST_JUDGING" ||
+    status === "AWAITING_FINAL_APPROVAL";
+  const versionsToShow = showAllRounds ? allVersions : latestVersions;
+
+  // Best version by top judgement score (within the displayed set)
+  const bestVersionId = versionsToShow.reduce<string | null>((bestId, v) => {
     const score =
       v.judgements.length > 0
         ? Math.max(...v.judgements.map((j) => j.weighted_total))
@@ -574,7 +927,7 @@ export default function BookDetailPage({
     const bestScore =
       bestId != null
         ? Math.max(
-            ...(latestVersions
+            ...(versionsToShow
               .find((lv) => lv.id === bestId)
               ?.judgements.map((j) => j.weighted_total) ?? [-1])
           )
@@ -582,8 +935,11 @@ export default function BookDetailPage({
     return score > bestScore ? v.id : bestId;
   }, null);
 
-  const isApprovalGate = book?.status === "AWAITING_APPROVAL";
-  const isExportReady = book?.status === "EXPORT_READY" || book?.status === "DONE";
+  const isShortlistGate = status === "AWAITING_SHORTLIST";
+  const isShortlistJudging = status === "SHORTLIST_JUDGING";
+  const isFinalApprovalGate = status === "AWAITING_FINAL_APPROVAL";
+  const isLegacyApprovalGate = status === "AWAITING_APPROVAL";
+  const isExportReady = status === "EXPORT_READY" || status === "DONE";
 
   // Load metadata for export-ready books
   const metaFetcher = useCallback(
@@ -592,7 +948,7 @@ export default function BookDetailPage({
   );
   const [metadata] = usePolling<BookMetadata | null>(metaFetcher, 30000);
 
-  function handleApprovalAction() {
+  function handleGateAction() {
     refreshBook();
     refreshVersions();
   }
@@ -613,55 +969,73 @@ export default function BookDetailPage({
     );
   }
 
+  const roundLabel = showAllRounds
+    ? `All Rounds — ${versionsToShow.length} Variant${versionsToShow.length !== 1 ? "s" : ""}`
+    : `Round ${latestRound} — ${versionsToShow.length} Variant${versionsToShow.length !== 1 ? "s" : ""}`;
+
   return (
-    <div className="min-h-screen bg-[#0f1117]">
+    <div className="min-h-full bg-[#0f1117]">
       {/* Header */}
-      <header className="border-b border-gray-800 px-6 py-4 flex items-center gap-4">
-        <Link
-          href="/"
-          className="text-gray-400 hover:text-gray-200 transition-colors text-sm"
-        >
-          ← Board
-        </Link>
-        <div className="h-4 w-px bg-gray-700" />
-        <h1 className="text-base font-semibold text-gray-100 truncate flex-1">
+      <header className="border-b border-gray-800 px-6 py-4 flex items-center gap-3 flex-wrap sticky top-0 bg-[#0f1117]/95 backdrop-blur z-10">
+        <h1 className="text-base font-semibold text-gray-100 truncate flex-1 min-w-0">
           {book?.title ?? "Untitled Book"}
         </h1>
         {book && <StatusBadge status={book.status} />}
+        {book && (
+          <ControlBar
+            book={book}
+            onChanged={() => {
+              refreshBook();
+              refreshVersions();
+            }}
+          />
+        )}
       </header>
 
       <main className="max-w-5xl mx-auto px-6 py-8 space-y-8">
-        {/* Book meta */}
+        {/* Pipeline progress */}
+        {book && <StageTimeline book={book} events={events} />}
         {book && (
-          <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
-            {[
-              ["Status", STATUS_LABEL[book.status]],
-              ["Round", `${book.current_round} / ${book.max_rounds}`],
-              ["Threshold", book.score_threshold.toString()],
-              ["Updated", new Date(book.updated_at).toLocaleString()],
-            ].map(([label, val]) => (
-              <div key={label} className="rounded-lg bg-gray-800/50 border border-gray-700 px-4 py-3">
-                <p className="text-xs text-gray-500 mb-0.5">{label}</p>
-                <p className="text-sm font-medium text-gray-200">{val}</p>
-              </div>
-            ))}
-          </div>
+          <p className="text-xs text-gray-500 -mt-4">
+            Threshold {book.score_threshold} · Updated{" "}
+            {new Date(book.updated_at).toLocaleString()}
+          </p>
         )}
 
-        {/* Approval gate */}
-        {isApprovalGate && (
-          <ApprovalGate bookId={id} onAction={handleApprovalAction} />
+        {/* Phase 1: shortlist selector */}
+        {isShortlistGate && versions && (
+          <ShortlistGate
+            bookId={id}
+            versions={allVersions}
+            onAction={handleGateAction}
+          />
+        )}
+
+        {/* Phase 2: shortlist judging in progress */}
+        {isShortlistJudging && <ShortlistJudgingView />}
+
+        {/* Phase 3: final approval */}
+        {isFinalApprovalGate && versions && (
+          <FinalApprovalGate
+            bookId={id}
+            versions={allVersions}
+            onAction={handleGateAction}
+          />
+        )}
+
+        {/* Legacy single-gate approval (AWAITING_APPROVAL) */}
+        {isLegacyApprovalGate && (
+          <ApprovalGate bookId={id} onAction={handleGateAction} />
         )}
 
         {/* Story variants */}
-        {latestVersions.length > 0 && (
+        {versionsToShow.length > 0 && (
           <section>
             <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">
-              Round {latestRound} — {latestVersions.length} Variant
-              {latestVersions.length !== 1 ? "s" : ""}
+              {roundLabel}
             </h2>
             <div className="space-y-5">
-              {latestVersions
+              {versionsToShow
                 .slice()
                 .sort((a, b) => {
                   const scoreA =
@@ -692,6 +1066,7 @@ export default function BookDetailPage({
             {metadata && (
               <MetadataPanel bookId={id} initialMeta={metadata} />
             )}
+            <PreviewGallery bookId={id} />
             <ExportPanel bookId={id} />
           </>
         )}

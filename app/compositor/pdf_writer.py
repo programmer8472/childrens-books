@@ -24,7 +24,7 @@ from app.compositor.page_renderer import (
     SAFE_INSET,
     render_spread,
 )
-from app.compositor.spread_types import SpreadType, assign_spread_types
+from app.compositor.spread_types import NUM_STORY_SPREADS, SpreadType, assign_spread_types
 from app.compositor.typography import (
     FONT_BODY,
     FONT_DISPLAY,
@@ -85,11 +85,14 @@ def assemble_interior(
     story_text: str,
     images: list[bytes | None],
     metadata: dict,
+    spreads: list[str] | None = None,
 ) -> None:
     """Write the complete 32-page interior PDF to output.
 
     images: list of 12 image blobs (one per story spread). May contain None
             entries if an image hasn't been generated yet.
+    spreads: the 12 per-spread text strings. When omitted (legacy rows), the
+             story_text is paginated into 12 contiguous segments.
     metadata keys: title, author, description, age_range.
     """
     ensure_fonts_registered()
@@ -98,8 +101,11 @@ def assemble_interior(
     title = metadata.get("title", "Untitled")
     author = metadata.get("author", "")
 
-    # Split story into 12 segments for the 12 spreads
-    segments = _split_story(story_text, 12)
+    # Use the structured spreads when present; otherwise paginate the prose.
+    if spreads and len(spreads) == NUM_STORY_SPREADS:
+        segments = list(spreads)
+    else:
+        segments = _split_story(story_text, NUM_STORY_SPREADS)
     spread_types = assign_spread_types()
 
     c = Canvas(output, pagesize=(PAGE_W, PAGE_H))
@@ -180,9 +186,16 @@ def _split_story(text: str, n: int) -> list[str]:
     if not paragraphs:
         return [""] * n
 
-    # Distribute paragraphs into n buckets
-    buckets: list[list[str]] = [[] for _ in range(n)]
-    for idx, para in enumerate(paragraphs):
-        buckets[idx % n].append(para)
+    # Distribute paragraphs into n CONTIGUOUS buckets so narrative order is
+    # preserved across spreads (bucket 0 = first paragraphs, not every n-th).
+    # Earlier buckets absorb the remainder when the count doesn't divide evenly.
+    base, extra = divmod(len(paragraphs), n)
+    buckets: list[str] = []
+    start = 0
+    for b in range(n):
+        size = base + (1 if b < extra else 0)
+        chunk = paragraphs[start:start + size]
+        buckets.append(" ".join(chunk))
+        start += size
 
-    return [" ".join(b) if b else "" for b in buckets]
+    return buckets

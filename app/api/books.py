@@ -20,6 +20,7 @@ from app.storage.local import LocalStorage
 from app.tasks import (
     pipeline_generate_images,
     pipeline_handle_revision,
+    pipeline_rejudge_shortlist,
     pipeline_run_judging,
     pipeline_start,
 )
@@ -43,6 +44,14 @@ class RejectIn(BaseModel):
     note: str | None = None
 
 
+class ApproveIn(BaseModel):
+    story_version_id: uuid.UUID | None = None
+
+
+class ShortlistIn(BaseModel):
+    story_version_ids: list[uuid.UUID]
+
+
 class BookOut(BaseModel):
     id: uuid.UUID
     title: str | None
@@ -50,6 +59,7 @@ class BookOut(BaseModel):
     current_round: int
     max_rounds: int
     score_threshold: float
+    cancel_requested: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -78,6 +88,7 @@ class VersionOut(BaseModel):
     round: int
     method: str
     content: str
+    shortlisted: bool
     judgements: list[JudgementOut]
     created_at: datetime
 
@@ -131,18 +142,59 @@ def get_versions(book_id: uuid.UUID, db: Session = Depends(get_session)):
     return list(db.scalars(stmt))
 
 
-@router.post("/books/{book_id}/approve")
-def approve_book(book_id: uuid.UUID, db: Session = Depends(get_session)):
+@router.post("/books/{book_id}/shortlist")
+def shortlist_book(book_id: uuid.UUID, body: ShortlistIn, db: Session = Depends(get_session)):
+    """Phase 1 → Phase 2: submit selected versions for re-judging."""
     repo = BookRepo(db)
     try:
         book = repo.get(book_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Book not found")
-    if book.status != BookStatus.AWAITING_APPROVAL:
+    if book.status != BookStatus.AWAITING_SHORTLIST:
         raise HTTPException(
             status_code=400,
-            detail=f"Book is {book.status.value}; expected AWAITING_APPROVAL",
+            detail=f"Book is {book.status.value}; expected AWAITING_SHORTLIST",
         )
+    if not body.story_version_ids:
+        raise HTTPException(status_code=400, detail="story_version_ids must not be empty")
+    db.commit()
+    pipeline_rejudge_shortlist.delay(str(book_id), [str(v) for v in body.story_version_ids])
+    publish_event(book_id, {"type": "shortlist_submitted", "actor": "human"})
+    return {"ok": True, "status": "SHORTLIST_JUDGING"}
+
+
+@router.post("/books/{book_id}/approve")
+def approve_book(
+    book_id: uuid.UUID,
+    body: ApproveIn = Body(default=ApproveIn()),
+    db: Session = Depends(get_session),
+):
+    """Phase 3 → APPROVED: human selects a story version and approves.
+
+    For books in AWAITING_FINAL_APPROVAL (new flow), story_version_id is required.
+    For books in AWAITING_APPROVAL (legacy gate), story_version_id is optional.
+    """
+    repo = BookRepo(db)
+    try:
+        book = repo.get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    _allowed = {BookStatus.AWAITING_FINAL_APPROVAL, BookStatus.AWAITING_APPROVAL}
+    if book.status not in _allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Book is {book.status.value}; expected AWAITING_FINAL_APPROVAL or AWAITING_APPROVAL",
+        )
+
+    if book.status == BookStatus.AWAITING_FINAL_APPROVAL:
+        if not body.story_version_id:
+            raise HTTPException(
+                status_code=400,
+                detail="story_version_id is required when approving from AWAITING_FINAL_APPROVAL",
+            )
+        repo.set_approved_version(book, body.story_version_id)
+
     repo.transition(book, BookStatus.APPROVED, actor="human")
     db.commit()
     publish_event(book_id, {"type": "status_change", "status": "APPROVED", "actor": "human"})
@@ -189,6 +241,45 @@ def retry_book(book_id: uuid.UUID, db: Session = Depends(get_session)):
         status_code=400,
         detail=f"Cannot retry from {book.status.value}; retryable states: JUDGING, REVISION",
     )
+
+
+# Human gates have no pending automated task, so a cancel there must transition
+# immediately. Running/queued stages have a task in flight whose boundary guard
+# will pick up the flag. Terminal states can't be cancelled.
+_HUMAN_GATES = frozenset({
+    BookStatus.AWAITING_SHORTLIST,
+    BookStatus.AWAITING_FINAL_APPROVAL,
+    BookStatus.AWAITING_APPROVAL,
+})
+_UNCANCELLABLE = frozenset({
+    BookStatus.EXPORT_READY,
+    BookStatus.DONE,
+    BookStatus.RETIRED,
+    BookStatus.CANCELLED,
+})
+
+
+@router.post("/books/{book_id}/cancel")
+def cancel_book(book_id: uuid.UUID, db: Session = Depends(get_session)):
+    """Human stop request. Cancels gate states immediately; flags running ones."""
+    repo = BookRepo(db)
+    try:
+        book = repo.get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+    if book.status in _UNCANCELLABLE:
+        raise HTTPException(status_code=400, detail=f"Book is {book.status.value}; cannot cancel")
+
+    repo.request_cancel(book)
+    if book.status in _HUMAN_GATES:
+        repo.cancel(book, note="Cancelled by human")
+        db.commit()
+        publish_event(book_id, {"type": "cancelled", "status": "CANCELLED", "actor": "human"})
+        return {"ok": True, "status": "CANCELLED"}
+
+    db.commit()
+    publish_event(book_id, {"type": "cancel_requested", "actor": "human"})
+    return {"ok": True, "status": book.status.value, "cancelling": True}
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +366,46 @@ def get_export_manifest(book_id: uuid.UUID, db: Session = Depends(get_session)):
     if book.status.value not in ("EXPORT_READY", "DONE"):
         raise HTTPException(status_code=400, detail=f"Book is {book.status.value}; not yet EXPORT_READY")
     return book.export_manifest or {}
+
+
+@router.get("/books/{book_id}/previews")
+def get_previews(book_id: uuid.UUID, db: Session = Depends(get_session)):
+    """Return the ordered preview-page count and the preflight QA report.
+
+    Available whenever composition has run (EXPORT_READY, DONE, or a book
+    retired by a failed preflight), so the human can visually inspect the
+    rendered pages and see why a book was blocked.
+    """
+    try:
+        book = BookRepo(db).get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+    manifest = book.export_manifest or {}
+    previews = manifest.get("previews") or []
+    return {
+        "count": len(previews),
+        "preflight": manifest.get("preflight"),
+    }
+
+
+@router.get("/books/{book_id}/previews/{index}")
+def get_preview_page(book_id: uuid.UUID, index: int, db: Session = Depends(get_session)):
+    """Serve a single rendered preview page (PNG) by 0-based index."""
+    from fastapi.responses import Response
+
+    try:
+        book = BookRepo(db).get(book_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Book not found")
+    previews = (book.export_manifest or {}).get("previews") or []
+    if not (0 <= index < len(previews)):
+        raise HTTPException(status_code=404, detail="Preview page not found")
+    storage = LocalStorage(get_settings().storage_local_root)
+    try:
+        data = storage.get(previews[index])
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Preview file not found in storage")
+    return Response(content=data, media_type="image/png")
 
 
 @router.get("/books/{book_id}/export/{artifact}")

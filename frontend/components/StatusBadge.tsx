@@ -20,6 +20,10 @@ const COLOR_CLASSES = {
     badge: "bg-red-900/50 text-red-300 border border-red-700",
     dot: "bg-red-400",
   },
+  gray: {
+    badge: "bg-gray-700/50 text-gray-300 border border-gray-600",
+    dot: "bg-gray-400",
+  },
 } as const;
 
 export function StatusBadge({ status }: { status: BookStatus }) {
@@ -42,6 +46,7 @@ export function statusBorderColor(status: BookStatus): string {
     yellow: "border-l-yellow-500",
     blue: "border-l-blue-500",
     red: "border-l-red-500",
+    gray: "border-l-gray-500",
   }[c];
 }
 

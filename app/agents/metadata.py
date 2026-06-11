@@ -40,6 +40,10 @@ _METADATA_SCHEMA = {
     "additionalProperties": False,
 }
 
+# Keys the model MUST supply for usable metadata. The rest are optional and get
+# safe defaults if the model omits them (e.g. a standalone book has no series).
+_HARD_REQUIRED = ("title", "author", "description", "keywords")
+
 _SYSTEM = """You are a children's book marketing specialist with deep knowledge of Amazon KDP
 and what makes children's book listings convert. You write metadata that is warm, authentic,
 and grounded in the emotional experience of the child reader — never clinical or summary-like.
@@ -76,13 +80,20 @@ class MetadataAgent:
                 system=_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
                 json_schema=_METADATA_SCHEMA,
+                max_tokens=4096,
+                tier="fast",
             )
             try:
                 data = json.loads(resp.content)
-                # Ensure required keys present
-                for key in _METADATA_SCHEMA["required"]:
-                    if key not in data:
+                # Only the core fields are mandatory; optional fields get defaults
+                # so the pipeline never stalls when the model omits, e.g., a series
+                # name for a standalone book.
+                for key in _HARD_REQUIRED:
+                    if key not in data or data[key] in (None, "", []):
                         raise ValueError(f"Missing required key: {key}")
+                data.setdefault("subtitle", "")
+                data.setdefault("series_name", "")
+                data.setdefault("age_range", str(brief.get("age_range", "")))
                 return data
             except (json.JSONDecodeError, ValueError) as e:
                 last_err = e

@@ -34,10 +34,15 @@ class ImageResult:
 
 class LLMProvider(ABC):
     @abstractmethod
-    def generate(self, system: str, messages: list, *, json_schema: dict | None = None) -> LLMResponse:
+    def generate(self, system: str, messages: list, *, json_schema: dict | None = None, max_tokens: int | None = None, tier: str = "high") -> LLMResponse:
         """Call the LLM and return its response.
 
         Pass json_schema to request structured JSON output (vendor-specific enforcement).
+
+        tier selects the model capability/cost class, independent of output format:
+          - "high": most capable model, large output budget (creative authoring).
+          - "fast": cheaper/faster model, smaller default budget (evaluation,
+            structured extraction). Override the budget per-call with max_tokens.
         """
         ...
 

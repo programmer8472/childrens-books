@@ -2,6 +2,7 @@ import type {
   Book,
   BookMetadata,
   CreateBookPayload,
+  PreviewInfo,
   StoryVersion,
 } from "./types";
 
@@ -34,9 +35,10 @@ export const api = {
     req<Book>("/books", { method: "POST", body: JSON.stringify(body) }),
 
   // Pipeline actions
-  approveBook: (id: string) =>
+  approveBook: (id: string, story_version_id?: string) =>
     req<{ ok: boolean; status: string }>(`/books/${id}/approve`, {
       method: "POST",
+      body: JSON.stringify({ story_version_id: story_version_id ?? null }),
     }),
   rejectBook: (id: string, note?: string) =>
     req<{ ok: boolean; status: string }>(`/books/${id}/reject`, {
@@ -45,6 +47,16 @@ export const api = {
     }),
   retryBook: (id: string) =>
     req<{ ok: boolean }>(`/books/${id}/retry`, { method: "POST" }),
+  cancelBook: (id: string) =>
+    req<{ ok: boolean; status: string; cancelling?: boolean }>(
+      `/books/${id}/cancel`,
+      { method: "POST" }
+    ),
+  shortlistVersions: (id: string, story_version_ids: string[]) =>
+    req<{ ok: boolean; status: string }>(`/books/${id}/shortlist`, {
+      method: "POST",
+      body: JSON.stringify({ story_version_ids }),
+    }),
 
   // Versions
   getVersions: (id: string) =>
@@ -74,4 +86,10 @@ export const api = {
     req<Record<string, string>>(`/books/${id}/export`),
   exportUrl: (id: string, artifact: string) =>
     `${BASE}/books/${id}/export/${artifact}`,
+
+  // Visual QA previews
+  getPreviews: (id: string) =>
+    req<PreviewInfo>(`/books/${id}/previews`),
+  previewUrl: (id: string, index: number) =>
+    `${BASE}/books/${id}/previews/${index}`,
 };

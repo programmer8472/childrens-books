@@ -24,8 +24,8 @@ class FakeLLMProvider(LLMProvider):
         """Enqueue a response to be returned on the next generate() call."""
         self._queue.append(response)
 
-    def generate(self, system: str, messages: list, *, json_schema: dict | None = None) -> LLMResponse:
-        self.calls.append({"system": system, "messages": messages, "json_schema": json_schema})
+    def generate(self, system: str, messages: list, *, json_schema: dict | None = None, max_tokens: int | None = None, tier: str = "high") -> LLMResponse:
+        self.calls.append({"system": system, "messages": messages, "json_schema": json_schema, "tier": tier})
         if self._queue:
             content = self._queue.popleft()
         elif json_schema is not None:

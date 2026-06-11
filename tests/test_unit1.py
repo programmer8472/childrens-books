@@ -42,14 +42,25 @@ class TestBookStatus:
         with pytest.raises(ValueError):
             assert_legal_transition(BookStatus.DRAFT_BRIEF, BookStatus.WRITING)
 
-    def test_judging_can_go_to_revision_approval_or_retired(self):
+    def test_judging_can_go_to_revision_or_awaiting_shortlist(self):
         targets = LEGAL_TRANSITIONS[BookStatus.JUDGING]
         assert BookStatus.REVISION in targets
-        assert BookStatus.AWAITING_APPROVAL in targets
-        assert BookStatus.RETIRED in targets
+        assert BookStatus.AWAITING_SHORTLIST in targets
 
     def test_awaiting_approval_can_be_retired_by_human(self):
         assert BookStatus.RETIRED in LEGAL_TRANSITIONS[BookStatus.AWAITING_APPROVAL]
+
+    def test_in_progress_stages_can_fail_to_retired(self):
+        """Every automated, in-progress stage must be able to fail to RETIRED so a
+        task that exhausts its retries surfaces as red instead of freezing."""
+        in_progress = [
+            BookStatus.DRAFT_BRIEF, BookStatus.OUTLINING, BookStatus.WRITING,
+            BookStatus.JUDGING, BookStatus.REVISION, BookStatus.SHORTLIST_JUDGING,
+            BookStatus.APPROVED, BookStatus.GENERATING_IMAGES, BookStatus.GENERATING_COVER,
+            BookStatus.DRAFTING_METADATA, BookStatus.EXPORTING,
+        ]
+        for s in in_progress:
+            assert BookStatus.RETIRED in LEGAL_TRANSITIONS[s], f"{s} cannot fail to RETIRED"
 
     def test_full_happy_path_is_legal(self):
         path = [
@@ -57,7 +68,9 @@ class TestBookStatus:
             BookStatus.OUTLINING,
             BookStatus.WRITING,
             BookStatus.JUDGING,
-            BookStatus.AWAITING_APPROVAL,
+            BookStatus.AWAITING_SHORTLIST,
+            BookStatus.SHORTLIST_JUDGING,
+            BookStatus.AWAITING_FINAL_APPROVAL,
             BookStatus.APPROVED,
             BookStatus.GENERATING_IMAGES,
             BookStatus.GENERATING_COVER,

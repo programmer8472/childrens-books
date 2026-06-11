@@ -1,7 +1,7 @@
 """Repository for the judgements table."""
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Judgement
@@ -56,3 +56,22 @@ class JudgementRepo:
     def best_for_round(self, book_id: uuid.UUID, round: int) -> Judgement | None:
         results = self.list_for_round(book_id, round)
         return results[0] if results else None
+
+    def delete_for_versions(
+        self, book_id: uuid.UUID, round: int, version_ids: list[uuid.UUID]
+    ) -> None:
+        """Remove existing judgements for these versions in a round.
+
+        Called before (re-)judging so a retried or re-delivered task replaces
+        scores in place instead of accumulating duplicate judgement rows.
+        """
+        if not version_ids:
+            return
+        self._s.execute(
+            delete(Judgement).where(
+                Judgement.book_id == book_id,
+                Judgement.round == round,
+                Judgement.story_version_id.in_(version_ids),
+            )
+        )
+        self._s.flush()

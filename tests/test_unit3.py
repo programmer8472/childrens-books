@@ -39,11 +39,17 @@ _FAILING_JUDGEMENT = {**_GOOD_JUDGEMENT, "weighted_total": 6.0, "passed": False}
 # ---------------------------------------------------------------------------
 
 class TestWriterAgent:
-    def test_returns_string(self):
-        llm = FakeLLMProvider(responses=["Once upon a time..."])
+    def test_returns_story_draft_with_twelve_spreads(self):
+        from app.agents.base import NUM_STORY_SPREADS
+        from app.agents.writer import StoryDraft
+        spreads = [f"Spread {i} text." for i in range(1, 13)]
+        llm = FakeLLMProvider(responses=[json.dumps({"spreads": spreads})])
         agent = WriterAgent(llm)
         result = agent.write(BRIEF, "three-act")
-        assert result == "Once upon a time..."
+        assert isinstance(result, StoryDraft)
+        assert len(result.spreads) == NUM_STORY_SPREADS
+        assert result.spreads[0] == "Spread 1 text."
+        assert "Spread 1 text." in result.content
 
     def test_calls_llm_once(self):
         llm = FakeLLMProvider(responses=["story"])
@@ -94,10 +100,11 @@ class TestWriterAgent:
             WriterAgent(llm).write(BRIEF, "interpretive-dance")
 
     def test_all_four_methods_accepted(self):
+        from app.agents.writer import StoryDraft
         for method in ("three-act", "sensory-first", "problem-solution", "hero's-journey"):
             llm = FakeLLMProvider(responses=["story"])
             result = WriterAgent(llm).write(BRIEF, method)
-            assert isinstance(result, str)
+            assert isinstance(result, StoryDraft)
 
 
 # ---------------------------------------------------------------------------

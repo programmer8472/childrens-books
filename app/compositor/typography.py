@@ -6,6 +6,7 @@ All fonts are bundled in app/compositor/fonts/ — never rely on system fonts.
 from __future__ import annotations
 
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
 
 from reportlab.pdfbase import pdfmetrics
@@ -20,6 +21,7 @@ FONT_DISPLAY = "FredokaOne"
 # Spec sizes
 SIZE_BODY_YOUNG = 20       # ages 3-5
 SIZE_BODY_OLDER = 18       # ages 5-8
+SIZE_BODY_MIN = 16         # spec floor — never auto-shrink below this
 SIZE_DISPLAY_MIN = 28
 SIZE_DISPLAY_MAX = 36
 SIZE_COPYRIGHT = 10
@@ -52,7 +54,12 @@ def body_font_size(age_range: str) -> float:
 
 
 def wrap_text(text: str, max_chars: int = 40) -> list[str]:
-    """Wrap text to lines of at most max_chars (spec: 35-45 chars per line)."""
+    """Wrap text to lines of at most max_chars (spec: 35-45 chars per line).
+
+    Character-count wrapping — kept for callers that don't supply a pixel box.
+    New layout code should prefer wrap_text_to_width, which measures real glyph
+    advances and therefore guarantees the text fits the available width.
+    """
     lines = []
     for paragraph in text.split("\n"):
         if not paragraph.strip():
@@ -60,6 +67,82 @@ def wrap_text(text: str, max_chars: int = 40) -> list[str]:
             continue
         lines.extend(textwrap.wrap(paragraph, width=max_chars) or [""])
     return lines
+
+
+class TextOverflowError(Exception):
+    """Raised when text cannot fit a box even at the minimum permitted size."""
+
+
+@dataclass
+class FitResult:
+    lines: list[str]
+    size: float
+    fits: bool
+
+
+def wrap_text_to_width(text: str, font: str, size: float, max_width: float) -> list[str]:
+    """Greedy word-wrap using real glyph widths so no line exceeds max_width.
+
+    A single word longer than max_width is placed on its own line rather than
+    dropped (it will be measured by the caller's fit check).
+    """
+    ensure_fonts_registered()
+    lines: list[str] = []
+    for paragraph in text.split("\n"):
+        if not paragraph.strip():
+            lines.append("")
+            continue
+        words = paragraph.split()
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if pdfmetrics.stringWidth(candidate, font, size) <= max_width or not current:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+    return lines
+
+
+def _block_height(num_lines: int, size: float) -> float:
+    return num_lines * size * LEADING_MULTIPLIER
+
+
+def fit_text_block(
+    text: str,
+    box_w: float,
+    box_h: float,
+    max_size: float,
+    *,
+    min_size: float = SIZE_BODY_MIN,
+    font: str = FONT_BODY,
+) -> FitResult:
+    """Find the largest size in [min_size, max_size] that fits text in the box.
+
+    Returns the wrapped lines, the chosen size, and whether it actually fits.
+    When nothing fits even at min_size, returns the min-size wrapping with
+    fits=False so the caller can decide (render best-effort vs. fail preflight).
+    Never silently drops text.
+    """
+    ensure_fonts_registered()
+    size = max_size
+    last_lines = wrap_text_to_width(text, font, size, box_w)
+    while size >= min_size:
+        lines = wrap_text_to_width(text, font, size, box_w)
+        widest = max((pdfmetrics.stringWidth(ln, font, size) for ln in lines), default=0.0)
+        if widest <= box_w and _block_height(len(lines), size) <= box_h:
+            return FitResult(lines=lines, size=size, fits=True)
+        last_lines = lines
+        size -= 1
+    return FitResult(lines=last_lines, size=min_size, fits=False)
+
+
+def text_fits(text: str, box_w: float, box_h: float, max_size: float,
+              *, min_size: float = SIZE_BODY_MIN, font: str = FONT_BODY) -> bool:
+    """True if text fits the box at some size >= min_size. Used by preflight."""
+    return fit_text_block(text, box_w, box_h, max_size, min_size=min_size, font=font).fits
 
 
 def _relative_luminance(r: float, g: float, b: float) -> float:
